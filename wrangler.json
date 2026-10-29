@@ -8,6 +8,7 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
+	"previews": {},
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"

@@ -1,0 +1,152 @@
+.tetris {
+	--cell: min(30px, 4vh, 7vw);
+	display: flex;
+	flex-wrap: wrap;
+	gap: 24px;
+	justify-content: center;
+	align-items: flex-start;
+	padding: 16px;
+	color: #e5e7eb;
+}
+
+.board {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(10, var(--cell));
+	grid-template-rows: repeat(20, var(--cell));
+	gap: 1px;
+	padding: 4px;
+	background: #111827;
+	border: 2px solid #374151;
+	border-radius: 6px;
+}
+
+.cell {
+	width: var(--cell);
+	height: var(--cell);
+	background: #1f2937;
+	border-radius: 3px;
+}
+
+.cell.filled {
+	background: var(--c);
+	box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.25), inset 0 3px 0 rgba(255, 255, 255, 0.2);
+}
+
+.cell.ghost {
+	background: transparent;
+	box-shadow: inset 0 0 0 2px var(--c);
+	opacity: 0.5;
+}
+
+.overlay {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	background: rgba(0, 0, 0, 0.7);
+	border-radius: 4px;
+}
+
+.overlay h2 {
+	margin: 0;
+	font-size: 2rem;
+}
+
+.panel {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	min-width: 160px;
+}
+
+.panel h1 {
+	margin: 0;
+	font-size: 2rem;
+	letter-spacing: 0.1em;
+}
+
+.panel h3 {
+	margin: 0 0 8px;
+	font-size: 0.85rem;
+	text-transform: uppercase;
+	color: #9ca3af;
+}
+
+.preview {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 6px;
+	background: #111827;
+	border-radius: 6px;
+}
+
+.preview-row {
+	display: flex;
+	gap: 1px;
+}
+
+.preview .cell:not(.filled) {
+	background: transparent;
+}
+
+.stats {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 4px 16px;
+	margin: 0;
+}
+
+.stats dt {
+	color: #9ca3af;
+}
+
+.stats dd {
+	margin: 0;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.help {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: 0.85rem;
+	color: #9ca3af;
+}
+
+.touch {
+	display: none;
+	width: 100%;
+	justify-content: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.touch button {
+	font-size: 1.4rem;
+	min-width: 52px;
+}
+
+@media (pointer: coarse) {
+	.touch {
+		display: flex;
+	}
+	.help {
+		display: none;
+	}
+}
+
+.tetris button {
+	color: #e5e7eb;
+	background: #1f2937;
+	border: 1px solid #374151;
+}
+
+.tetris button:hover {
+	border-color: #a855f7;
+}
