@@ -9,6 +9,10 @@
 	},
 	"upload_source_maps": true,
 	"previews": {},
+	"durable_objects": {
+		"bindings": [{ "name": "PONG_ROOM", "class_name": "PongRoom" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["PongRoom"] }],
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
