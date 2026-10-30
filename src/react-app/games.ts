@@ -17,4 +17,11 @@ export const games: Game[] = [
 		emoji: "🧱",
 		component: lazy(() => import("./tetris/Tetris")),
 	},
+	{
+		id: "shooter",
+		title: "Star Defender",
+		description: "Blast alien waves and beat three bosses.",
+		emoji: "🚀",
+		component: lazy(() => import("./shooter/Shooter")),
+	},
 ];
