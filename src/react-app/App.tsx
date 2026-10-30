@@ -19,7 +19,10 @@ function useHashRoute() {
 
 function App() {
 	const route = useHashRoute();
-	const game = games.find((g) => g.id === route);
+	// "pong/ABCD" -> game "pong" with param "ABCD" (e.g. a room code).
+	const [id, ...rest] = route.split("/");
+	const param = rest.join("/") || undefined;
+	const game = games.find((g) => g.id === id);
 
 	if (!game) return <Landing />;
 
@@ -30,7 +33,7 @@ function App() {
 				← All games
 			</a>
 			<Suspense fallback={<p className="loading">Loading…</p>}>
-				<Game />
+				<Game param={param} />
 			</Suspense>
 		</div>
 	);
