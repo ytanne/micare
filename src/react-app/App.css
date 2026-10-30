@@ -1,4 +1,5 @@
 #root {
+	width: 100%;
 	margin: 0 auto;
 	text-align: left;
 }
@@ -6,4 +7,74 @@
 body {
 	background-color: #0b1120;
 	color-scheme: dark;
+}
+
+.landing {
+	max-width: 880px;
+	margin: 0 auto;
+	padding: 48px 16px;
+	color: #e5e7eb;
+}
+
+.landing h1 {
+	margin: 0 0 32px;
+	font-size: 2.2rem;
+	text-align: center;
+}
+
+.game-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
+	justify-content: center;
+	gap: 16px;
+}
+
+.game-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 24px;
+	color: inherit;
+	background: #111827;
+	border: 1px solid #374151;
+	border-radius: 12px;
+	transition: border-color 0.2s, transform 0.2s;
+}
+
+.game-card:hover {
+	color: inherit;
+	border-color: #a855f7;
+	transform: translateY(-2px);
+}
+
+.game-card h2 {
+	margin: 0;
+	font-size: 1.3rem;
+}
+
+.game-card p {
+	margin: 0;
+	color: #9ca3af;
+}
+
+.game-emoji {
+	font-size: 2.4rem;
+	line-height: 1;
+}
+
+.game-shell {
+	padding: 12px 16px 0;
+}
+
+.back-link {
+	color: #9ca3af;
+}
+
+.back-link:hover {
+	color: #e5e7eb;
+}
+
+.loading {
+	color: #9ca3af;
+	text-align: center;
 }
