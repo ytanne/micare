@@ -5,7 +5,6 @@ import {
 	useRef,
 	type Dispatch,
 	type PointerEvent as ReactPointerEvent,
-	type ReactNode,
 } from "react";
 import {
 	COLORS,
@@ -33,58 +32,6 @@ const KEY_ACTIONS: Record<string, Action["type"]> = {
 	r: "restart",
 	R: "restart",
 };
-
-const REPEAT_DELAY = 220;
-const REPEAT_INTERVAL = 70;
-
-// Fires on press (faster than click on touch screens); `repeat` keeps firing while held.
-function ControlButton({
-	label,
-	repeat,
-	onPress,
-	children,
-}: {
-	label: string;
-	repeat?: boolean;
-	onPress: () => void;
-	children: ReactNode;
-}) {
-	const timers = useRef<{ delay?: number; interval?: number }>({});
-
-	const stop = () => {
-		window.clearTimeout(timers.current.delay);
-		window.clearInterval(timers.current.interval);
-	};
-
-	useEffect(() => {
-		const t = timers.current;
-		return () => {
-			window.clearTimeout(t.delay);
-			window.clearInterval(t.interval);
-		};
-	}, []);
-
-	return (
-		<button
-			aria-label={label}
-			onPointerDown={(e) => {
-				e.preventDefault();
-				onPress();
-				if (!repeat) return;
-				stop();
-				timers.current.delay = window.setTimeout(() => {
-					timers.current.interval = window.setInterval(onPress, REPEAT_INTERVAL);
-				}, REPEAT_DELAY);
-			}}
-			onPointerUp={stop}
-			onPointerLeave={stop}
-			onPointerCancel={stop}
-			onContextMenu={(e) => e.preventDefault()}
-		>
-			{children}
-		</button>
-	);
-}
 
 interface Gesture {
 	x: number;
@@ -250,6 +197,14 @@ function Tetris() {
 					<dt>Level</dt>
 					<dd>{level}</dd>
 				</dl>
+				<button
+					className="pause-btn"
+					aria-label={paused ? "Resume" : "Pause"}
+					onClick={() => dispatch({ type: "pause" })}
+					disabled={gameOver}
+				>
+					{paused ? "▶" : "⏸"}
+				</button>
 				<ul className="help">
 					<li>← → move</li>
 					<li>↑ / X rotate</li>
@@ -259,26 +214,6 @@ function Tetris() {
 				</ul>
 			</aside>
 
-			<div className="touch">
-				<ControlButton label="Move left" repeat onPress={() => dispatch({ type: "left" })}>
-					←
-				</ControlButton>
-				<ControlButton label="Rotate" onPress={() => dispatch({ type: "rotate" })}>
-					⟳
-				</ControlButton>
-				<ControlButton label="Move right" repeat onPress={() => dispatch({ type: "right" })}>
-					→
-				</ControlButton>
-				<ControlButton label="Soft drop" repeat onPress={() => dispatch({ type: "softDrop" })}>
-					↓
-				</ControlButton>
-				<ControlButton label="Hard drop" onPress={() => dispatch({ type: "hardDrop" })}>
-					⤓
-				</ControlButton>
-				<ControlButton label="Pause" onPress={() => dispatch({ type: "pause" })}>
-					⏸
-				</ControlButton>
-			</div>
 			<p className="hint">Tap to rotate · swipe to move · flick down to drop</p>
 		</div>
 	);
