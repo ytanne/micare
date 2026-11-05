@@ -202,12 +202,14 @@ export type Action =
 	| { type: "softDrop" }
 	| { type: "hardDrop" }
 	| { type: "pause" }
+	| { type: "blur" }
 	| { type: "restart" };
 
 export function reducer(state: GameState, action: Action): GameState {
 	if (action.type === "restart") return newGame();
 	if (state.gameOver) return state;
 	if (action.type === "pause") return { ...state, paused: !state.paused };
+	if (action.type === "blur") return { ...state, paused: true };
 	if (state.paused) return state;
 
 	switch (action.type) {

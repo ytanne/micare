@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useReducer } from "react";
+import {
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	type Dispatch,
+	type PointerEvent as ReactPointerEvent,
+	type ReactNode,
+} from "react";
 import {
 	COLORS,
+	COLS,
 	type Action,
 	type Cell,
 	dropInterval,
@@ -25,9 +34,125 @@ const KEY_ACTIONS: Record<string, Action["type"]> = {
 	R: "restart",
 };
 
+const REPEAT_DELAY = 220;
+const REPEAT_INTERVAL = 70;
+
+// Fires on press (faster than click on touch screens); `repeat` keeps firing while held.
+function ControlButton({
+	label,
+	repeat,
+	onPress,
+	children,
+}: {
+	label: string;
+	repeat?: boolean;
+	onPress: () => void;
+	children: ReactNode;
+}) {
+	const timers = useRef<{ delay?: number; interval?: number }>({});
+
+	const stop = () => {
+		window.clearTimeout(timers.current.delay);
+		window.clearInterval(timers.current.interval);
+	};
+
+	useEffect(() => {
+		const t = timers.current;
+		return () => {
+			window.clearTimeout(t.delay);
+			window.clearInterval(t.interval);
+		};
+	}, []);
+
+	return (
+		<button
+			aria-label={label}
+			onPointerDown={(e) => {
+				e.preventDefault();
+				onPress();
+				if (!repeat) return;
+				stop();
+				timers.current.delay = window.setTimeout(() => {
+					timers.current.interval = window.setInterval(onPress, REPEAT_INTERVAL);
+				}, REPEAT_DELAY);
+			}}
+			onPointerUp={stop}
+			onPointerLeave={stop}
+			onPointerCancel={stop}
+			onContextMenu={(e) => e.preventDefault()}
+		>
+			{children}
+		</button>
+	);
+}
+
+interface Gesture {
+	x: number;
+	y: number;
+	anchorX: number;
+	anchorY: number;
+	time: number;
+	moved: boolean;
+}
+
+// Touch gestures on the board: tap rotates, drag moves/soft-drops, flick down hard-drops.
+function useBoardGestures(dispatch: Dispatch<Action>) {
+	const gesture = useRef<Gesture | null>(null);
+
+	return {
+		onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+			if (e.pointerType !== "touch") return;
+			if ((e.target as HTMLElement).closest(".overlay")) return;
+			e.currentTarget.setPointerCapture(e.pointerId);
+			gesture.current = {
+				x: e.clientX,
+				y: e.clientY,
+				anchorX: e.clientX,
+				anchorY: e.clientY,
+				time: performance.now(),
+				moved: false,
+			};
+		},
+		onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+			const g = gesture.current;
+			if (!g) return;
+			const size = e.currentTarget.getBoundingClientRect().width / COLS;
+			while (e.clientX - g.anchorX >= size) {
+				dispatch({ type: "right" });
+				g.anchorX += size;
+			}
+			while (g.anchorX - e.clientX >= size) {
+				dispatch({ type: "left" });
+				g.anchorX -= size;
+			}
+			while (e.clientY - g.anchorY >= size) {
+				dispatch({ type: "softDrop" });
+				g.anchorY += size;
+			}
+			if (Math.hypot(e.clientX - g.x, e.clientY - g.y) > 10) g.moved = true;
+		},
+		onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+			const g = gesture.current;
+			gesture.current = null;
+			if (!g) return;
+			const elapsed = performance.now() - g.time;
+			const dx = e.clientX - g.x;
+			const dy = e.clientY - g.y;
+			if (!g.moved && elapsed < 300) dispatch({ type: "rotate" });
+			else if (dy > 60 && dy > Math.abs(dx) && dy / elapsed > 0.8) {
+				dispatch({ type: "hardDrop" });
+			}
+		},
+		onPointerCancel() {
+			gesture.current = null;
+		},
+	};
+}
+
 function Tetris() {
 	const [state, dispatch] = useReducer(reducer, undefined, newGame);
 	const { board, piece, queue, score, lines, level, paused, gameOver } = state;
+	const gestures = useBoardGestures(dispatch);
 
 	useEffect(() => {
 		if (paused || gameOver) return;
@@ -44,6 +169,15 @@ function Tetris() {
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
+	}, []);
+
+	// Pause when the tab or app goes to the background (e.g. switching apps on a phone).
+	useEffect(() => {
+		const onVisibility = () => {
+			if (document.hidden) dispatch({ type: "blur" });
+		};
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => document.removeEventListener("visibilitychange", onVisibility);
 	}, []);
 
 	// Board with the ghost and active piece drawn on top.
@@ -67,10 +201,12 @@ function Tetris() {
 	}, [state, board, piece]);
 
 	const next = queue[0];
+	// Drop empty rows so the preview stays compact (the I piece is a 4x4 matrix).
+	const nextRows = previewMatrix(next).filter((row) => row.some(Boolean));
 
 	return (
 		<div className="tetris">
-			<div className="board">
+			<div className="board" {...gestures}>
 				{cells.flat().map((cell, i) => (
 					<div
 						key={i}
@@ -93,7 +229,7 @@ function Tetris() {
 				<section>
 					<h3>Next</h3>
 					<div className="preview">
-						{previewMatrix(next).map((row, r) => (
+						{nextRows.map((row, r) => (
 							<div key={r} className="preview-row">
 								{row.map((v, c) => (
 									<div
@@ -124,13 +260,26 @@ function Tetris() {
 			</aside>
 
 			<div className="touch">
-				<button onClick={() => dispatch({ type: "left" })} aria-label="Move left">←</button>
-				<button onClick={() => dispatch({ type: "rotate" })} aria-label="Rotate">⟳</button>
-				<button onClick={() => dispatch({ type: "right" })} aria-label="Move right">→</button>
-				<button onClick={() => dispatch({ type: "softDrop" })} aria-label="Soft drop">↓</button>
-				<button onClick={() => dispatch({ type: "hardDrop" })} aria-label="Hard drop">⤓</button>
-				<button onClick={() => dispatch({ type: "pause" })} aria-label="Pause">⏸</button>
+				<ControlButton label="Move left" repeat onPress={() => dispatch({ type: "left" })}>
+					←
+				</ControlButton>
+				<ControlButton label="Rotate" onPress={() => dispatch({ type: "rotate" })}>
+					⟳
+				</ControlButton>
+				<ControlButton label="Move right" repeat onPress={() => dispatch({ type: "right" })}>
+					→
+				</ControlButton>
+				<ControlButton label="Soft drop" repeat onPress={() => dispatch({ type: "softDrop" })}>
+					↓
+				</ControlButton>
+				<ControlButton label="Hard drop" onPress={() => dispatch({ type: "hardDrop" })}>
+					⤓
+				</ControlButton>
+				<ControlButton label="Pause" onPress={() => dispatch({ type: "pause" })}>
+					⏸
+				</ControlButton>
 			</div>
+			<p className="hint">Tap to rotate · swipe to move · flick down to drop</p>
 		</div>
 	);
 }
