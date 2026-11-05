@@ -7,6 +7,7 @@
 	align-items: flex-start;
 	padding: 16px;
 	color: #e5e7eb;
+	-webkit-tap-highlight-color: transparent;
 }
 
 .board {
@@ -19,6 +20,11 @@
 	background: #111827;
 	border: 2px solid #374151;
 	border-radius: 6px;
+	/* Gestures are handled in JS; stop the browser from scrolling or selecting. */
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
 }
 
 .cell {
@@ -76,10 +82,16 @@
 	color: #9ca3af;
 }
 
+/* Fixed size (4x2 cells) so the panel doesn't jump between pieces. */
 .preview {
-	display: inline-flex;
+	display: flex;
 	flex-direction: column;
+	align-items: center;
+	justify-content: center;
 	gap: 1px;
+	box-sizing: content-box;
+	width: calc(4 * var(--cell) + 3px);
+	height: calc(2 * var(--cell) + 1px);
 	padding: 6px;
 	background: #111827;
 	border-radius: 6px;
@@ -119,26 +131,9 @@
 	color: #9ca3af;
 }
 
-.touch {
+.touch,
+.hint {
 	display: none;
-	width: 100%;
-	justify-content: center;
-	gap: 8px;
-	flex-wrap: wrap;
-}
-
-.touch button {
-	font-size: 1.4rem;
-	min-width: 52px;
-}
-
-@media (pointer: coarse) {
-	.touch {
-		display: flex;
-	}
-	.help {
-		display: none;
-	}
 }
 
 .tetris button {
@@ -149,4 +144,131 @@
 
 .tetris button:hover {
 	border-color: #a855f7;
+}
+
+/* Phones and narrow windows: one screen, no page scroll. */
+@media (max-width: 700px), (pointer: coarse) {
+	.game-shell {
+		box-sizing: border-box;
+		display: flex;
+		flex-direction: column;
+		height: 100vh;
+		height: 100dvh;
+		overflow: hidden;
+		padding: 8px max(8px, env(safe-area-inset-right))
+			max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+	}
+
+	.tetris {
+		/* 240px reserves the back link, stats row, controls, hint and board frame. */
+		--cell: min(30px, calc((100dvh - 240px) / 20), calc((100vw - 56px) / 10));
+		flex: 1;
+		min-height: 0;
+		display: grid;
+		grid-template-columns: auto;
+		grid-auto-rows: auto;
+		justify-content: center;
+		justify-items: center;
+		align-content: space-evenly;
+		gap: 10px;
+		padding: 0;
+	}
+
+	.panel {
+		order: -1;
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		min-width: 0;
+		width: calc(10 * var(--cell) + 31px);
+	}
+
+	.panel h1,
+	.panel h3,
+	.help {
+		display: none;
+	}
+
+	.stats {
+		grid-auto-flow: column;
+		grid-template-columns: none;
+		grid-template-rows: auto auto;
+		gap: 0 16px;
+		text-align: center;
+	}
+
+	.stats dt {
+		font-size: 0.75rem;
+		text-transform: uppercase;
+	}
+
+	.overlay h2 {
+		font-size: 1.5rem;
+	}
+
+	.touch {
+		display: grid;
+		grid-template-columns: repeat(6, 1fr);
+		gap: 6px;
+		width: min(100%, 420px);
+	}
+
+	.touch button {
+		height: 52px;
+		padding: 0;
+		font-size: 1.4rem;
+		touch-action: manipulation;
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+	}
+
+	.touch button:active {
+		background: #374151;
+	}
+
+	.hint {
+		display: block;
+		margin: 0;
+		font-size: 0.75rem;
+		color: #6b7280;
+		text-align: center;
+	}
+}
+
+/* Phones held sideways: board on the left, stats and controls on the right. */
+@media (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+	.tetris {
+		--cell: min(30px, calc((100dvh - 90px) / 20));
+		grid-template-columns: auto minmax(200px, 260px);
+		grid-template-rows: auto 1fr;
+		align-content: center;
+		align-items: start;
+		justify-items: stretch;
+		gap: 12px 20px;
+	}
+
+	.board {
+		grid-column: 1;
+		grid-row: 1 / span 2;
+	}
+
+	.panel {
+		order: 0;
+		grid-column: 2;
+		grid-row: 1;
+		width: auto;
+	}
+
+	.touch {
+		grid-column: 2;
+		grid-row: 2;
+		grid-template-columns: repeat(3, 1fr);
+		width: auto;
+	}
+
+	.hint {
+		display: none;
+	}
 }
