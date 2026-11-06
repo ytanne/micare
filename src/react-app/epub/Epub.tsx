@@ -24,13 +24,13 @@ export default function Epub() {
 	useEffect(() => {
 		if (!book || !path || mode !== "read") return;
 		let stale = false;
-		let urls: string[] = [];
-		renderChapter(book, path, src).then((r) => {
-			urls = r.urls;
-			if (stale) urls.forEach(URL.revokeObjectURL);
-			else setPreview(r.url);
+		let url = "";
+		renderChapter(book, path, src).then((u) => {
+			url = u;
+			if (stale) URL.revokeObjectURL(u);
+			else setPreview(u);
 		});
-		return () => { stale = true; urls.forEach(URL.revokeObjectURL); };
+		return () => { stale = true; URL.revokeObjectURL(url); };
 	}, [book, path, src, mode]);
 
 	const load = async (file: File) => {

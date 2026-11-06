@@ -40,27 +40,31 @@ export async function openBook(data: ArrayBuffer): Promise<Book> {
 	return { zip, title, chapters };
 }
 
-// Chapter as a blob URL for the preview iframe, with images/stylesheets rewritten to blob URLs.
+// Chapter as a blob URL for the preview iframe, with images and stylesheets inlined.
 // Parsed as XHTML when well-formed: the HTML parser mangles `<title/>`-style self-closing tags
-// (blank page). Falls back to HTML for broken markup. Caller revokes every URL in `urls`.
+// (blank page). Falls back to HTML for broken markup. Caller revokes the URL.
 export async function renderChapter(book: Book, path: string, html: string) {
 	let doc = new DOMParser().parseFromString(html, "application/xhtml+xml");
 	const isXml = !doc.getElementsByTagName("parsererror").length;
 	if (!isXml) doc = new DOMParser().parseFromString(html, "text/html");
-	const urls: string[] = [];
-	const targets = doc.querySelectorAll("img[src], link[rel~=stylesheet][href]");
-	for (const el of targets) {
-		const attr = el.hasAttribute("src") ? "src" : "href";
-		const file = book.zip.file(resolvePath(path, el.getAttribute(attr)!));
+	// Inline resources: a sandboxed (opaque-origin) document can't load blob: URLs of ours.
+	// shortcut: url() references inside CSS (fonts, backgrounds) are not rewritten.
+	for (const el of doc.querySelectorAll("img[src], link[rel~=stylesheet][href]")) {
+		const isImg = el.hasAttribute("src");
+		const file = book.zip.file(resolvePath(path, el.getAttribute(isImg ? "src" : "href")!));
 		if (!file) continue;
-		const url = URL.createObjectURL(await file.async("blob"));
-		urls.push(url);
-		el.setAttribute(attr, url);
+		if (isImg) {
+			const ext = file.name.split(".").pop()!.toLowerCase();
+			const mime = ext === "svg" ? "svg+xml" : ext === "jpg" ? "jpeg" : ext;
+			el.setAttribute("src", `data:image/${mime};base64,${await file.async("base64")}`);
+		} else {
+			const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+			style.textContent = await file.async("string");
+			el.replaceWith(style);
+		}
 	}
 	const out = isXml ? new XMLSerializer().serializeToString(doc) : doc.documentElement.outerHTML;
-	const url = URL.createObjectURL(new Blob([out], { type: isXml ? "application/xhtml+xml" : "text/html" }));
-	urls.push(url);
-	return { url, urls };
+	return URL.createObjectURL(new Blob([out], { type: isXml ? "application/xhtml+xml" : "text/html" }));
 }
 
 export async function saveBook(book: Book): Promise<Blob> {
