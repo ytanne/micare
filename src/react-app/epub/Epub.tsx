@@ -76,7 +76,7 @@ export default function Epub() {
 					</div>
 					{mode === "read" ? (
 						// No allow-scripts: book content can't run code.
-						<iframe title="chapter" sandbox="" srcDoc={preview} style={{ height: "70vh", background: "#fff", border: "1px solid #888" }} />
+						<iframe title="chapter" sandbox="" srcDoc={preview} style={{ width: "100%", height: "70vh", background: "#fff", colorScheme: "light", border: "1px solid #888" }} />
 					) : (
 						<textarea value={src} onChange={(e) => edit(e.target.value)} spellCheck={false} style={{ height: "70vh", fontFamily: "monospace" }} />
 					)}
