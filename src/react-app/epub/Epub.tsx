@@ -28,7 +28,7 @@ export default function Epub() {
 		renderChapter(book, path, src).then((r) => {
 			urls = r.urls;
 			if (stale) urls.forEach(URL.revokeObjectURL);
-			else setPreview(r.html);
+			else setPreview(r.url);
 		});
 		return () => { stale = true; urls.forEach(URL.revokeObjectURL); };
 	}, [book, path, src, mode]);
@@ -76,7 +76,7 @@ export default function Epub() {
 					</div>
 					{mode === "read" ? (
 						// No allow-scripts: book content can't run code.
-						<iframe title="chapter" sandbox="" srcDoc={preview} style={{ width: "100%", height: "70vh", background: "#fff", colorScheme: "light", border: "1px solid #888" }} />
+						<iframe title="chapter" sandbox="" src={preview} style={{ width: "100%", height: "70vh", background: "#fff", colorScheme: "light", border: "1px solid #888" }} />
 					) : (
 						<textarea value={src} onChange={(e) => edit(e.target.value)} spellCheck={false} style={{ height: "70vh", fontFamily: "monospace" }} />
 					)}

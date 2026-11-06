@@ -40,9 +40,13 @@ export async function openBook(data: ArrayBuffer): Promise<Book> {
 	return { zip, title, chapters };
 }
 
-// Chapter HTML with images/stylesheets rewritten to blob URLs. Caller revokes `urls`.
+// Chapter as a blob URL for the preview iframe, with images/stylesheets rewritten to blob URLs.
+// Parsed as XHTML when well-formed: the HTML parser mangles `<title/>`-style self-closing tags
+// (blank page). Falls back to HTML for broken markup. Caller revokes every URL in `urls`.
 export async function renderChapter(book: Book, path: string, html: string) {
-	const doc = new DOMParser().parseFromString(html, "text/html");
+	let doc = new DOMParser().parseFromString(html, "application/xhtml+xml");
+	const isXml = !doc.getElementsByTagName("parsererror").length;
+	if (!isXml) doc = new DOMParser().parseFromString(html, "text/html");
 	const urls: string[] = [];
 	const targets = doc.querySelectorAll("img[src], link[rel~=stylesheet][href]");
 	for (const el of targets) {
@@ -53,7 +57,10 @@ export async function renderChapter(book: Book, path: string, html: string) {
 		urls.push(url);
 		el.setAttribute(attr, url);
 	}
-	return { html: doc.documentElement.outerHTML, urls };
+	const out = isXml ? new XMLSerializer().serializeToString(doc) : doc.documentElement.outerHTML;
+	const url = URL.createObjectURL(new Blob([out], { type: isXml ? "application/xhtml+xml" : "text/html" }));
+	urls.push(url);
+	return { url, urls };
 }
 
 export async function saveBook(book: Book): Promise<Blob> {
