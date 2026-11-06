@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import Landing from "./Landing";
 import { games } from "./games";
+import { utils } from "./utils";
 import "./App.css";
 
 // Hash routing ("#/tetris") needs no server config and works with the SPA fallback.
@@ -22,15 +23,17 @@ function App() {
 	// "pong/ABCD" -> game "pong" with param "ABCD" (e.g. a room code).
 	const [id, ...rest] = route.split("/");
 	const param = rest.join("/") || undefined;
-	const game = games.find((g) => g.id === id);
+	// Games and utilities share one namespace; "utils" is the Utils tab itself.
+	const game = games.find((g) => g.id === id) ?? utils.find((u) => u.id === id);
 
-	if (!game) return <Landing />;
+	if (!game) return <Landing tab={id === "utils" ? "utils" : "games"} />;
 
 	const Game = game.component;
+	const isUtil = utils.some((u) => u.id === id);
 	return (
 		<div className="game-shell">
-			<a className="back-link" href="#/">
-				← All games
+			<a className="back-link" href={isUtil ? "#/utils" : "#/"}>
+				{isUtil ? "← All utilities" : "← All games"}
 			</a>
 			<Suspense fallback={<p className="loading">Loading…</p>}>
 				<Game param={param} />
