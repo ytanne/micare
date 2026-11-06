@@ -22,6 +22,37 @@ body {
 	text-align: center;
 }
 
+.landing-tabs {
+	display: flex;
+	justify-content: center;
+	gap: 8px;
+	margin-bottom: 28px;
+}
+
+.landing-tab {
+	padding: 8px 20px;
+	color: #9ca3af;
+	border: 1px solid #374151;
+	border-radius: 999px;
+	text-decoration: none;
+}
+
+.landing-tab:hover {
+	color: #e5e7eb;
+	border-color: #a855f7;
+}
+
+.landing-tab.active {
+	color: #fff;
+	background: #7e22ce;
+	border-color: #a855f7;
+}
+
+.landing-empty {
+	text-align: center;
+	color: #9ca3af;
+}
+
 .game-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(220px, 260px));
