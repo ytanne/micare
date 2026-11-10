@@ -23,5 +23,11 @@ export const utils: Util[] = [
 		emoji: "📖",
 		component: lazy(() => import("./epub/Epub")),
 	},
+	{
+		id: "azw",
+		title: "EPUB → AZW",
+		description: "Convert an EPUB to a Kindle AZW (MOBI) file.",
+		emoji: "📚",
+		component: lazy(() => import("./azw/Azw")),
+	},
 ];
-

@@ -3,6 +3,7 @@ import JSZip from "jszip";
 export interface Book {
 	zip: JSZip;
 	title: string;
+	author: string;
 	chapters: string[]; // zip paths, in spine order
 }
 
@@ -37,7 +38,8 @@ export async function openBook(data: ArrayBuffer): Promise<Book> {
 	}
 	if (!chapters.length) throw new Error("EPUB has no readable chapters");
 	const title = opf.getElementsByTagNameNS("*", "title")[0]?.textContent ?? "Untitled";
-	return { zip, title, chapters };
+	const author = opf.getElementsByTagNameNS("*", "creator")[0]?.textContent ?? "";
+	return { zip, title, author, chapters };
 }
 
 // Chapter as a blob URL for the preview iframe, with images and stylesheets inlined.
