@@ -1,7 +1,7 @@
 import { openBook, resolvePath, type Book } from "../epub/epub";
 
 // EPUB -> MOBI6 (.azw). Text + images only.
-// shortcut: text is stored uncompressed, and there is no TOC, internal links, cover or CSS; upgrade if files are too big or devices want them.
+// shortcut: text is stored uncompressed, and there are no internal links, cover or CSS; upgrade if files are too big or devices want them.
 
 const KEEP = new Set("p h1 h2 h3 h4 h5 h6 div span b i u em strong br hr ul ol li blockquote table tr td th sup sub pre center".split(" "));
 const VOID = new Set(["br", "hr"]);
@@ -65,8 +65,25 @@ async function flatten(book: Book) {
 		}
 		parts.push(walk(doc.body ?? doc.documentElement, rec));
 	}
-	const html = `<html><head><guide></guide></head><body>${parts.join("<mbp:pagebreak/>")}</body></html>`;
-	return { text: new TextEncoder().encode(html), images };
+	// Kindle 3 "Go To > Table of Contents" jumps to the guide's filepos; entries link by byte offset.
+	// filepos is fixed-width, so offsets can be computed before the final text is assembled.
+	const enc = new TextEncoder();
+	const pos = (n: number) => String(n).padStart(10, "0");
+	const SEP = "<mbp:pagebreak/>";
+	const head = (toc: number) => `<html><head><guide><reference type="toc" title="Table of Contents" filepos=${pos(toc)}/></guide></head><body>`;
+	const tocHtml = (offs: number[]) =>
+		`<h2>Contents</h2>${book.chapters
+			.map((p, i) => `<p><a filepos=${pos(offs[i])}>${esc(book.titles.get(p) ?? `Chapter ${i + 1}`)}</a></p>`)
+			.join("")}${SEP}`;
+	const tocStart = enc.encode(head(0)).length;
+	let at = tocStart + enc.encode(tocHtml(parts.map(() => 0))).length;
+	const offs = parts.map((p) => {
+		const o = at;
+		at += enc.encode(p + SEP).length;
+		return o;
+	});
+	const html = `${head(tocStart)}${tocHtml(offs)}${parts.join(SEP)}</body></html>`;
+	return { text: enc.encode(html), images };
 }
 
 const concat = (parts: Uint8Array[]) => {
