@@ -29,7 +29,7 @@ a:hover {
 body {
 	margin: 0;
 	display: flex;
-	place-items: center;
+	align-items: flex-start; /* top-anchored, not centred */
 	min-width: 320px;
 	min-height: 100vh;
 	min-height: 100dvh;
