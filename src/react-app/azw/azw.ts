@@ -71,19 +71,20 @@ async function flatten(book: Book) {
 	const pos = (n: number) => String(n).padStart(10, "0");
 	const SEP = "<mbp:pagebreak/>";
 	const head = (toc: number) => `<html><head><guide><reference type="toc" title="Table of Contents" filepos=${pos(toc)}/></guide></head><body>`;
+	const title = (i: number) => book.titles.get(book.chapters[i]) ?? `Chapter ${i + 1}`;
 	const tocHtml = (offs: number[]) =>
-		`<h2>Contents</h2>${book.chapters
-			.map((p, i) => `<p><a filepos=${pos(offs[i])}>${esc(book.titles.get(p) ?? `Chapter ${i + 1}`)}</a></p>`)
-			.join("")}${SEP}`;
+		`<h2>Contents</h2>${offs.map((o, i) => `<p><a filepos=${pos(o)}>${esc(title(i))}</a></p>`).join("")}${SEP}`;
 	const tocStart = enc.encode(head(0)).length;
 	let at = tocStart + enc.encode(tocHtml(parts.map(() => 0))).length;
-	const offs = parts.map((p) => {
-		const o = at;
-		at += enc.encode(p + SEP).length;
-		return o;
+	const toc: TocEntry[] = parts.map((p, i) => {
+		const length = enc.encode(p + SEP).length;
+		const e = { title: title(i), offset: at, length };
+		at += length;
+		return e;
 	});
-	const html = `${head(tocStart)}${tocHtml(offs)}${parts.join(SEP)}</body></html>`;
-	return { text: enc.encode(html), images };
+	toc[toc.length - 1].length -= enc.encode(SEP).length; // no separator after the last chapter
+	const html = `${head(tocStart)}${tocHtml(toc.map((t) => t.offset))}${parts.join(SEP)}</body></html>`;
+	return { text: enc.encode(html), images, toc };
 }
 
 const concat = (parts: Uint8Array[]) => {
@@ -97,7 +98,68 @@ const concat = (parts: Uint8Array[]) => {
 };
 const ascii = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
 
-export function packMobi(title: string, author: string, text: Uint8Array, images: Uint8Array[]): Uint8Array {
+interface TocEntry {
+	title: string;
+	offset: number; // byte offset of the chapter in the (uncompressed) text
+	length: number;
+}
+
+const pad4 = (a: Uint8Array) => concat([a, new Uint8Array((4 - (a.length % 4)) % 4)]);
+const u32 = (...ns: number[]) => {
+	const out = new Uint8Array(4 * ns.length);
+	ns.forEach((n, i) => new DataView(out.buffer).setUint32(i * 4, n));
+	return out;
+};
+// MOBI variable-width integer: 7-bit groups, big-endian, high bit marks the last byte.
+const vwi = (n: number) => {
+	const b = [(n & 0x7f) | 0x80];
+	for (n = Math.floor(n / 128); n; n = Math.floor(n / 128)) b.unshift(n & 0x7f);
+	return Uint8Array.from(b);
+};
+
+function indxHeader(type: number, idxt: number, count: number, code: number, total: number, nctoc: number, tagx = false) {
+	const h = new Uint8Array(192);
+	h.set(ascii("INDX"));
+	h.set(u32(192, 0, type, 0, idxt, count, code, 0xffffffff, total, 0, 0, 0, nctoc), 4);
+	if (tagx) new DataView(h.buffer).setUint32(180, 192); // TAGX follows the header
+	return h;
+}
+
+// NCX index = the chapter list the Kindle shows under Go To: INDX header, one INDX data record, one CNCX (labels) record.
+// shortcut: flat list, one data record and one CNCX record (~64 KB each, thousands of chapters); upgrade for nested TOCs.
+function buildNcx(toc: TocEntry[]): Uint8Array[] {
+	const enc = new TextEncoder();
+	const labels: Uint8Array[] = [];
+	const labelAt: number[] = [];
+	let at = 0;
+	for (const t of toc) {
+		const s = enc.encode(t.title);
+		const e = concat([vwi(s.length), s]);
+		labelAt.push(at);
+		at += e.length;
+		labels.push(e);
+	}
+	const ids = toc.map((_, i) => enc.encode(String(i).padStart(3, "0")));
+	// entry = id (length-prefixed) + control byte (tags 1-4 present) + offset, length, label offset, depth
+	const entries = toc.map((t, i) => concat([Uint8Array.of(ids[i].length), ids[i], Uint8Array.of(0x0f), vwi(t.offset), vwi(t.length), vwi(labelAt[i]), vwi(0)]));
+	const body = pad4(concat(entries));
+	const idxtOffsets: number[] = [];
+	let o = 192;
+	for (const e of entries) {
+		idxtOffsets.push(o);
+		o += e.length;
+	}
+	const idxt = (offs: number[]) => pad4(concat([ascii("IDXT"), ...offs.map((x) => Uint8Array.of(x >> 8, x & 0xff))]));
+	const data = concat([indxHeader(1, 192 + body.length, toc.length, 0xffffffff, 0, 0), body, idxt(idxtOffsets)]);
+
+	const tags = [[1, 1, 1], [2, 1, 2], [3, 1, 4], [4, 1, 8]]; // offset, length, label, depth
+	const tagx = concat([ascii("TAGX"), u32(12 + 4 * (tags.length + 1), 1), ...tags.map((t) => Uint8Array.of(...t, 0)), Uint8Array.of(0, 0, 0, 1)]);
+	const last = concat([Uint8Array.of(ids[ids.length - 1].length), ids[ids.length - 1], Uint8Array.of(toc.length >> 8, toc.length & 0xff)]);
+	const header = concat([indxHeader(0, 192 + tagx.length + last.length, 1, 65001, toc.length, 1, true), tagx, last, idxt([192 + tagx.length])]);
+	return [header, data, pad4(concat(labels))];
+}
+
+export function packMobi(title: string, author: string, text: Uint8Array, images: Uint8Array[], toc: TocEntry[]): Uint8Array {
 	// Text records of <=4096 bytes, cut on UTF-8 character boundaries (so no trailing-byte flags needed).
 	const texts: Uint8Array[] = [];
 	for (let a = 0; a < text.length; ) {
@@ -134,6 +196,7 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 
 	const name = enc.encode(title);
 	const last = T + images.length; // index of the last content record
+	const ncx = buildNcx(toc); // records last+1 .. last+3
 	const r0 = new Uint8Array(248);
 	const v = new DataView(r0.buffer);
 	const nameOff = 248 + 12 + exth.length + exthPad;
@@ -160,19 +223,19 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 	v.setUint16(192, 1);
 	v.setUint16(194, last);
 	v.setUint32(196, 1);
-	v.setUint32(200, last + 2); // FCIS record
+	v.setUint32(200, last + 1 + ncx.length + 1); // FCIS record
 	v.setUint32(204, 1);
-	v.setUint32(208, last + 1); // FLIS record
+	v.setUint32(208, last + 1 + ncx.length); // FLIS record
 	v.setUint32(212, 1);
 	v.setUint32(224, 0xffffffff);
 	v.setUint32(232, 0xffffffff);
 	v.setUint32(236, 0xffffffff);
-	v.setUint32(244, 0xffffffff);
+	v.setUint32(244, last + 1); // NCX index record
 	const tail = new Uint8Array(name.length + 2 + ((4 - ((name.length + 2) % 4)) % 4));
 	tail.set(name);
 	const record0 = concat([r0, exthHead, exth, new Uint8Array(exthPad), tail]);
 
-	const records = [record0, ...texts, ...images, flis, fcis, eof];
+	const records = [record0, ...texts, ...images, ...ncx, flis, fcis, eof];
 	const head = new Uint8Array(78 + records.length * 8 + 2);
 	const h = new DataView(head.buffer);
 	head.set(ascii(title.replace(/[^A-Za-z0-9]/g, "_").slice(0, 31)));
@@ -193,7 +256,7 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 
 export async function epubToAzw(data: ArrayBuffer) {
 	const book = await openBook(data);
-	const { text, images } = await flatten(book);
-	const bytes = packMobi(book.title, book.author, text, images);
+	const { text, images, toc } = await flatten(book);
+	const bytes = packMobi(book.title, book.author, text, images, toc);
 	return { blob: new Blob([bytes as BlobPart], { type: "application/x-mobipocket-ebook" }), title: book.title, images: images.length };
 }
