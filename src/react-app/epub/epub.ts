@@ -5,6 +5,7 @@ export interface Book {
 	title: string;
 	author: string;
 	chapters: string[]; // zip paths, in spine order
+	titles: Map<string, string>; // zip path -> TOC title (first entry per file)
 }
 
 const xml = (s: string) => new DOMParser().parseFromString(s, "application/xml");
@@ -31,6 +32,28 @@ export async function openBook(data: ArrayBuffer): Promise<Book> {
 	for (const item of opf.getElementsByTagName("item")) {
 		manifest.set(item.getAttribute("id") ?? "", item.getAttribute("href") ?? "");
 	}
+	const titles = new Map<string, string>();
+	// EPUB3 nav document, else EPUB2 NCX. A broken TOC just means fallback titles.
+	const tocItem = opf.querySelector("item[properties~=nav]") ?? opf.querySelector('item[media-type="application/x-dtbncx+xml"]');
+	const tocHref = tocItem?.getAttribute("href");
+	if (tocHref) {
+		const tocPath = resolvePath(opfPath, tocHref);
+		const entries: [string, string][] = []; // [href, label]
+		const tocDoc = xml(await text(zip, tocPath));
+		const nav = tocDoc.querySelector("nav[*|type~=toc]") ?? tocDoc.querySelector("nav");
+		if (nav) {
+			for (const a of nav.getElementsByTagName("a")) entries.push([a.getAttribute("href") ?? "", a.textContent ?? ""]);
+		} else {
+			for (const p of tocDoc.getElementsByTagName("navPoint")) {
+				entries.push([p.querySelector("content")?.getAttribute("src") ?? "", p.querySelector("navLabel > text")?.textContent ?? ""]);
+			}
+		}
+		for (const [href, label] of entries) {
+			const path = href && resolvePath(tocPath, href.split("#")[0]);
+			const t = label.replace(/\s+/g, " ").trim();
+			if (path && t && !titles.has(path)) titles.set(path, t);
+		}
+	}
 	const chapters: string[] = [];
 	for (const ref of opf.getElementsByTagName("itemref")) {
 		const href = manifest.get(ref.getAttribute("idref") ?? "");
@@ -39,7 +62,7 @@ export async function openBook(data: ArrayBuffer): Promise<Book> {
 	if (!chapters.length) throw new Error("EPUB has no readable chapters");
 	const title = opf.getElementsByTagNameNS("*", "title")[0]?.textContent ?? "Untitled";
 	const author = opf.getElementsByTagNameNS("*", "creator")[0]?.textContent ?? "";
-	return { zip, title, author, chapters };
+	return { zip, title, author, chapters, titles };
 }
 
 // Chapter as a blob URL for the preview iframe, with images and stylesheets inlined.

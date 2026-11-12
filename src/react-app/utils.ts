@@ -30,4 +30,11 @@ export const utils: Util[] = [
 		emoji: "📚",
 		component: lazy(() => import("./azw/Azw")),
 	},
+	{
+		id: "mp3",
+		title: "MP3 Editor",
+		description: "Trim, cut, change volume, fade, and export audio.",
+		emoji: "🎚️",
+		component: lazy(() => import("./mp3/Mp3Editor")),
+	},
 ];

@@ -1,7 +1,7 @@
 import { openBook, resolvePath, type Book } from "../epub/epub";
 
 // EPUB -> MOBI6 (.azw). Text + images only.
-// shortcut: text is stored uncompressed, and there is no TOC, internal links, cover or CSS; upgrade if files are too big or devices want them.
+// shortcut: text is stored uncompressed, and there are no internal links, cover or CSS; upgrade if files are too big or devices want them.
 
 const KEEP = new Set("p h1 h2 h3 h4 h5 h6 div span b i u em strong br hr ul ol li blockquote table tr td th sup sub pre center".split(" "));
 const VOID = new Set(["br", "hr"]);
@@ -65,8 +65,26 @@ async function flatten(book: Book) {
 		}
 		parts.push(walk(doc.body ?? doc.documentElement, rec));
 	}
-	const html = `<html><head><guide></guide></head><body>${parts.join("<mbp:pagebreak/>")}</body></html>`;
-	return { text: new TextEncoder().encode(html), images };
+	// Kindle 3 "Go To > Table of Contents" jumps to the guide's filepos; entries link by byte offset.
+	// filepos is fixed-width, so offsets can be computed before the final text is assembled.
+	const enc = new TextEncoder();
+	const pos = (n: number) => String(n).padStart(10, "0");
+	const SEP = "<mbp:pagebreak/>";
+	const head = (toc: number) => `<html><head><guide><reference type="toc" title="Table of Contents" filepos=${pos(toc)} /></guide></head><body>`;
+	const title = (i: number) => book.titles.get(book.chapters[i]) ?? `Chapter ${i + 1}`;
+	const tocHtml = (offs: number[]) =>
+		`<h2>Contents</h2>${offs.map((o, i) => `<p><a filepos=${pos(o)}>${esc(title(i))}</a></p>`).join("")}${SEP}`;
+	const tocStart = enc.encode(head(0)).length;
+	let at = tocStart + enc.encode(tocHtml(parts.map(() => 0))).length;
+	const toc: TocEntry[] = parts.map((p, i) => {
+		const length = enc.encode(p + SEP).length;
+		const e = { title: title(i), offset: at, length };
+		at += length;
+		return e;
+	});
+	toc[toc.length - 1].length -= enc.encode(SEP).length; // no separator after the last chapter
+	const html = `${head(tocStart)}${tocHtml(toc.map((t) => t.offset))}${parts.join(SEP)}</body></html>`;
+	return { text: enc.encode(html), images, toc };
 }
 
 const concat = (parts: Uint8Array[]) => {
@@ -80,7 +98,69 @@ const concat = (parts: Uint8Array[]) => {
 };
 const ascii = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
 
-export function packMobi(title: string, author: string, text: Uint8Array, images: Uint8Array[]): Uint8Array {
+interface TocEntry {
+	title: string;
+	offset: number; // byte offset of the chapter in the (uncompressed) text
+	length: number;
+}
+
+const pad4 = (a: Uint8Array) => concat([a, new Uint8Array((4 - (a.length % 4)) % 4)]);
+const u32 = (...ns: number[]) => {
+	const out = new Uint8Array(4 * ns.length);
+	ns.forEach((n, i) => new DataView(out.buffer).setUint32(i * 4, n));
+	return out;
+};
+// MOBI variable-width integer: 7-bit groups, big-endian, high bit marks the last byte.
+const vwi = (n: number) => {
+	const b = [(n & 0x7f) | 0x80];
+	for (n = Math.floor(n / 128); n; n = Math.floor(n / 128)) b.unshift(n & 0x7f);
+	return Uint8Array.from(b);
+};
+
+function indxHeader(type: number, gen: number, idxt: number, count: number, code: number, total: number, nctoc: number, tagx = false) {
+	const h = new Uint8Array(192);
+	h.set(ascii("INDX"));
+	h.set(u32(192, 0, type, gen, idxt, count, code, 0xffffffff, total, 0, 0, 0, nctoc), 4);
+	if (tagx) new DataView(h.buffer).setUint32(180, 192); // TAGX follows the header
+	return h;
+}
+
+// NCX index = the chapter list the Kindle shows under Go To: INDX header, one INDX data record, one CNCX (labels) record.
+// shortcut: flat list, one data record and one CNCX record (~64 KB each, thousands of chapters); upgrade for nested TOCs.
+function buildNcx(toc: TocEntry[]): Uint8Array[] {
+	const enc = new TextEncoder();
+	const labels: Uint8Array[] = [];
+	const labelAt: number[] = [];
+	let at = 0;
+	for (const t of toc) {
+		const s = enc.encode(t.title);
+		const e = concat([vwi(s.length), s]);
+		labelAt.push(at);
+		at += e.length;
+		labels.push(e);
+	}
+	// ids: upper-case hex of the index, even length (as calibre writes them)
+	const ids = toc.map((_, i) => enc.encode(((h) => (h.length % 2 ? "0" + h : h))(i.toString(16).toUpperCase())));
+	// entry = id (length-prefixed) + control byte (tags 1-4 present) + offset, length, label offset, depth
+	const entries = toc.map((t, i) => concat([Uint8Array.of(ids[i].length), ids[i], Uint8Array.of(0x0f), vwi(t.offset), vwi(t.length), vwi(labelAt[i]), vwi(0)]));
+	const body = pad4(concat(entries));
+	const idxtOffsets: number[] = [];
+	let o = 192;
+	for (const e of entries) {
+		idxtOffsets.push(o);
+		o += e.length;
+	}
+	const idxt = (offs: number[]) => pad4(concat([ascii("IDXT"), ...offs.map((x) => Uint8Array.of(x >> 8, x & 0xff))]));
+	const data = concat([indxHeader(1, 0, 192 + body.length, toc.length, 0xffffffff, 0, 0), body, idxt(idxtOffsets)]);
+
+	const tags = [[1, 1, 1], [2, 1, 2], [3, 1, 4], [4, 1, 8]]; // offset, length, label, depth
+	const tagx = concat([ascii("TAGX"), u32(12 + 4 * (tags.length + 1), 1), ...tags.map((t) => Uint8Array.of(...t, 0)), Uint8Array.of(0, 0, 0, 1)]);
+	const last = pad4(concat([Uint8Array.of(ids[ids.length - 1].length), ids[ids.length - 1], Uint8Array.of(toc.length >> 8, toc.length & 0xff)]));
+	const header = concat([indxHeader(0, 2, 192 + tagx.length + last.length, 1, 65001, toc.length, 1, true), tagx, last, idxt([192 + tagx.length])]);
+	return [header, data, pad4(concat(labels))];
+}
+
+export function packMobi(title: string, author: string, text: Uint8Array, images: Uint8Array[], toc: TocEntry[]): Uint8Array {
 	// Text records of <=4096 bytes, cut on UTF-8 character boundaries (so no trailing-byte flags needed).
 	const texts: Uint8Array[] = [];
 	for (let a = 0; a < text.length; ) {
@@ -116,7 +196,8 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 	const exthPad = (4 - ((12 + exth.length) % 4)) % 4;
 
 	const name = enc.encode(title);
-	const last = T + images.length; // index of the last content record
+	const ncx = buildNcx(toc); // placed right after the text, as calibre does
+	const last = T + ncx.length + images.length; // index of the last content record
 	const r0 = new Uint8Array(248);
 	const v = new DataView(r0.buffer);
 	const nameOff = 248 + 12 + exth.length + exthPad;
@@ -131,12 +212,12 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 	v.setUint32(32, crypto.getRandomValues(new Uint32Array(1))[0]);
 	v.setUint32(36, 6); // version
 	for (let o = 40; o <= 76; o += 4) v.setUint32(o, 0xffffffff); // no indices
-	v.setUint32(80, T + 1 + images.length); // first non-book record (FLIS)
+	v.setUint32(80, T + 1); // first record after the text
 	v.setUint32(84, nameOff);
 	v.setUint32(88, name.length);
 	v.setUint32(92, 9); // locale: English
 	v.setUint32(104, 6); // min version
-	v.setUint32(108, images.length ? T + 1 : 0xffffffff);
+	v.setUint32(108, images.length ? T + 1 + ncx.length : 0xffffffff);
 	v.setUint32(128, 0x40); // has EXTH
 	v.setUint32(164, 0xffffffff);
 	v.setUint32(168, 0xffffffff); // no DRM
@@ -150,12 +231,12 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 	v.setUint32(224, 0xffffffff);
 	v.setUint32(232, 0xffffffff);
 	v.setUint32(236, 0xffffffff);
-	v.setUint32(244, 0xffffffff);
+	v.setUint32(244, T + 1); // NCX index record
 	const tail = new Uint8Array(name.length + 2 + ((4 - ((name.length + 2) % 4)) % 4));
 	tail.set(name);
 	const record0 = concat([r0, exthHead, exth, new Uint8Array(exthPad), tail]);
 
-	const records = [record0, ...texts, ...images, flis, fcis, eof];
+	const records = [record0, ...texts, ...ncx, ...images, flis, fcis, eof];
 	const head = new Uint8Array(78 + records.length * 8 + 2);
 	const h = new DataView(head.buffer);
 	head.set(ascii(title.replace(/[^A-Za-z0-9]/g, "_").slice(0, 31)));
@@ -176,7 +257,7 @@ export function packMobi(title: string, author: string, text: Uint8Array, images
 
 export async function epubToAzw(data: ArrayBuffer) {
 	const book = await openBook(data);
-	const { text, images } = await flatten(book);
-	const bytes = packMobi(book.title, book.author, text, images);
+	const { text, images, toc } = await flatten(book);
+	const bytes = packMobi(book.title, book.author, text, images, toc);
 	return { blob: new Blob([bytes as BlobPart], { type: "application/x-mobipocket-ebook" }), title: book.title, images: images.length };
 }

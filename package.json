@@ -12,6 +12,7 @@
 		"publish": true
 	},
 	"dependencies": {
+		"@breezystack/lamejs": "1.2.7",
 		"hono": "4.11.1",
 		"jszip": "3.10.1",
 		"react": "19.2.1",
