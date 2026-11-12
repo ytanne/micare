@@ -1,0 +1,35 @@
+.mp3 {
+	--wave: #4a90d9;
+	--sel: rgba(74, 144, 217, 0.3);
+	--head: #e5484d;
+	display: grid;
+	gap: 12px;
+	max-width: 800px;
+	margin: 0 auto;
+	padding: 16px;
+}
+
+.mp3 canvas {
+	width: 100%;
+	cursor: crosshair;
+	touch-action: none;
+	border: 1px solid #888;
+	border-radius: 4px;
+}
+
+.mp3-info {
+	margin: 0;
+	font-size: 0.9rem;
+	opacity: 0.8;
+}
+
+.mp3-row {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	align-items: center;
+}
+
+.mp3-row input[type="number"] {
+	width: 4.5em;
+}
