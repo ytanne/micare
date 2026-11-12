@@ -69,6 +69,14 @@ export function normalize(p: Pcm, a: number, b: number, target = 0.98): Pcm {
 
 export const dbToFactor = (db: number) => 10 ** (db / 20);
 
+/** Loudest sample in [a, b] seconds, in dBFS (-Infinity for silence). */
+export function peakDb(p: Pcm, a: number, b: number): number {
+	const [i, j] = range(p, a, b);
+	let peak = 0;
+	for (const c of p.ch) for (let k = i; k < j; k++) peak = Math.max(peak, Math.abs(c[k]));
+	return 20 * Math.log10(peak);
+}
+
 /** Min/max per bucket, for drawing a waveform. Uses the loudest channel per bucket. */
 export function peaks(p: Pcm, buckets: number): Float32Array {
 	const n = frames(p);

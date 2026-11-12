@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as E from "./edit";
 import { encodeMp3, encodeWav } from "./encode";
 import "./Mp3Editor.css";
 
 const H = 160;
+// Small lead time so a seamless source hand-off is scheduled sample-accurately.
+const HANDOFF = 0.03;
+
+interface Playing {
+	node: AudioBufferSourceNode;
+	gain: GainNode;
+	when: number; // ctx time the source starts producing sound
+	offset: number; // clip position (s) at `when`
+	end: number; // clip position (s) where playback stops
+}
 
 export default function Mp3Editor() {
 	const hist = useRef<E.History>(undefined);
@@ -11,14 +21,17 @@ export default function Mp3Editor() {
 	const rerender = () => bump((n) => n + 1);
 	const [name, setName] = useState("audio.mp3");
 	const [sel, setSel] = useState<[number, number] | null>(null);
-	const [db, setDb] = useState(3);
+	// Pending volume change in dB. Previewed live; baked into the audio by "Apply".
+	const [pending, setPending] = useState(0);
 	const [kbps, setKbps] = useState(192);
 	const [playhead, setPlayhead] = useState<number | null>(null);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
 	const canvas = useRef<HTMLCanvasElement>(null);
 	const ctxRef = useRef<AudioContext>(undefined);
-	const srcRef = useRef<AudioBufferSourceNode>(undefined);
+	const playRef = useRef<Playing>(undefined);
+	const rangeRef = useRef<[number, number]>([0, 0]);
+	const pendingRef = useRef(0);
 	const raf = useRef(0);
 	const drag = useRef<number | null>(null);
 
@@ -27,13 +40,39 @@ export default function Mp3Editor() {
 	// No selection means "the whole clip".
 	const [a, b] = sel ?? [0, dur];
 
+	const peak = useMemo(() => (pcm ? E.peakDb(pcm, a, b) : -Infinity), [pcm, a, b]);
+	const clips = peak + pending > 0;
+
 	const stop = useCallback(() => {
 		cancelAnimationFrame(raf.current);
-		try { srcRef.current?.stop(); } catch { /* already stopped */ }
-		srcRef.current = undefined;
+		try { playRef.current?.node.stop(); } catch { /* already stopped */ }
+		playRef.current = undefined;
 		setPlayhead(null);
 	}, []);
 	useEffect(() => () => { stop(); void ctxRef.current?.close(); }, [stop]);
+
+	// Drive the pending gain on the running GainNode: 1.0 outside the range,
+	// the slider's factor inside. Re-run whenever the slider or range changes;
+	// the source is never restarted, so playback is uninterrupted.
+	const scheduleGain = useCallback(() => {
+		const ctx = ctxRef.current;
+		const p = playRef.current;
+		if (!ctx || !p) return;
+		const [ra, rb] = rangeRef.current;
+		const factor = E.dbToFactor(pendingRef.current);
+		const now = ctx.currentTime;
+		const pos = p.offset + Math.max(0, now - p.when);
+		const g = p.gain.gain;
+		g.cancelScheduledValues(now);
+		g.setValueAtTime(pos >= ra && pos < rb ? factor : 1, now);
+		if (pos < ra) g.setValueAtTime(factor, now + (ra - pos));
+		if (pos < rb) g.setValueAtTime(1, now + (rb - pos));
+	}, []);
+	useEffect(() => {
+		rangeRef.current = [a, b];
+		pendingRef.current = pending;
+		scheduleGain();
+	}, [a, b, pending, scheduleGain]);
 
 	const load = async (file: File) => {
 		try {
@@ -45,28 +84,38 @@ export default function Mp3Editor() {
 			hist.current = new E.History({ rate: buf.sampleRate, ch });
 			setName(file.name);
 			setSel(null);
+			setPending(0);
 			rerender();
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "Could not decode that file.");
 		}
 	};
 
+	// Start `p` at clip position `offset`, `delay` seconds from now, and track it as the current playback.
+	const startAt = (p: E.Pcm, offset: number, end: number, delay = 0) => {
+		const ctx = (ctxRef.current ??= new AudioContext());
+		void ctx.resume();
+		const buf = ctx.createBuffer(p.ch.length, E.frames(p), p.rate);
+		p.ch.forEach((c, i) => buf.copyToChannel(c as Float32Array<ArrayBuffer>, i));
+		const node = ctx.createBufferSource();
+		node.buffer = buf;
+		const gain = ctx.createGain();
+		node.connect(gain).connect(ctx.destination);
+		const when = ctx.currentTime + delay;
+		node.start(when, offset, Math.max(0.01, end - offset));
+		node.onended = () => { if (playRef.current?.node === node) stop(); };
+		playRef.current = { node, gain, when, offset, end };
+	};
+
 	const play = () => {
 		if (!pcm) return;
 		stop();
-		const ctx = (ctxRef.current ??= new AudioContext());
-		void ctx.resume();
-		const buf = ctx.createBuffer(pcm.ch.length, E.frames(pcm), pcm.rate);
-		pcm.ch.forEach((c, i) => buf.copyToChannel(c as Float32Array<ArrayBuffer>, i));
-		const node = ctx.createBufferSource();
-		node.buffer = buf;
-		node.connect(ctx.destination);
-		const start = ctx.currentTime;
-		node.onended = () => { if (srcRef.current === node) stop(); };
-		node.start(0, a, Math.max(0.01, b - a));
-		srcRef.current = node;
+		startAt(pcm, a, b);
+		scheduleGain();
 		const tick = () => {
-			setPlayhead(a + ctx.currentTime - start);
+			const p = playRef.current;
+			if (!p) return;
+			setPlayhead(p.offset + Math.max(0, ctxRef.current!.currentTime - p.when));
 			raf.current = requestAnimationFrame(tick);
 		};
 		tick();
@@ -77,13 +126,39 @@ export default function Mp3Editor() {
 		if (!pcm || b - a <= 0) return;
 		stop();
 		hist.current!.push(f(pcm, a, b));
+		setPending(0);
 		if (after === "clear") setSel(null);
 		rerender();
 	};
+
+	// Bake the slider's gain into the audio. If playing, hand off to the new
+	// audio at the same position so the music doesn't restart.
+	const commitGain = () => {
+		if (!pcm || pending === 0 || b - a <= 0) return;
+		const next = E.gain(pcm, a, b, E.dbToFactor(pending));
+		const cur = playRef.current;
+		if (cur) {
+			const ctx = ctxRef.current!;
+			const pos = cur.offset + Math.max(0, ctx.currentTime - cur.when) + HANDOFF;
+			if (pos < cur.end) {
+				const old = cur.node;
+				startAt(next, pos, cur.end, HANDOFF);
+				old.stop(playRef.current!.when);
+			} else {
+				stop();
+			}
+		}
+		hist.current!.push(next);
+		pendingRef.current = 0;
+		setPending(0);
+		rerender();
+	};
+
 	const undoRedo = (k: "undo" | "redo") => {
 		stop();
 		hist.current![k]();
 		setSel(null);
+		setPending(0);
 		rerender();
 	};
 
@@ -140,6 +215,7 @@ export default function Mp3Editor() {
 
 	const fmt = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
 	const h = hist.current;
+	const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
 
 	return (
 		<div className="mp3">
@@ -154,6 +230,7 @@ export default function Mp3Editor() {
 						onPointerDown={(e) => {
 							e.currentTarget.setPointerCapture(e.pointerId);
 							drag.current = timeAt(e);
+							stop();
 							setSel(null);
 						}}
 						onPointerMove={(e) => {
@@ -181,11 +258,24 @@ export default function Mp3Editor() {
 						<button onClick={() => apply((p, s, t) => E.normalize(p, s, t))}>Normalize</button>
 					</div>
 					<div className="mp3-row">
-						<label>
-							Volume{" "}
-							<input type="number" step={1} value={db} onChange={(e) => setDb(+e.target.value)} /> dB
+						<label className="mp3-slider">
+							Volume
+							<input
+								type="range"
+								min={-24}
+								max={12}
+								step={0.5}
+								value={pending}
+								onChange={(e) => setPending(+e.target.value)}
+							/>
+							<output>{signed(pending)} dB</output>
 						</label>
-						<button onClick={() => apply((p, s, t) => E.gain(p, s, t, E.dbToFactor(db)))}>Apply volume</button>
+						<button disabled={pending === 0} onClick={commitGain}>Apply</button>
+						<button disabled={pending === 0} onClick={() => setPending(0)}>Reset</button>
+						<span className={clips ? "mp3-clip" : "mp3-info"}>
+							Peak {Number.isFinite(peak) ? `${(peak + pending).toFixed(1)} dB` : "—"}
+							{clips && " — will clip"}
+						</span>
 					</div>
 					<div className="mp3-row">
 						<label>
