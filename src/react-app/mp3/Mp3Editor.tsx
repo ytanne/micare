@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import FileDrop from "../FileDrop";
 import * as E from "./edit";
 import { encodeMp3, encodeWav } from "./encode";
 import "./Mp3Editor.css";
@@ -6,6 +7,19 @@ import "./Mp3Editor.css";
 const H = 160;
 // Small lead time so a seamless source hand-off is scheduled sample-accurately.
 const HANDOFF = 0.03;
+
+// One AudioBuffer per snapshot, built lazily. The freshly decoded clip reuses the decoder's own
+// buffer, so playing an unedited file costs no extra memory. Entries are freed with the snapshot.
+const bufCache = new WeakMap<E.Pcm, AudioBuffer>();
+function audioBufferFor(ctx: AudioContext, p: E.Pcm): AudioBuffer {
+	let buf = bufCache.get(p);
+	if (!buf) {
+		buf = ctx.createBuffer(p.ch.length, E.frames(p), p.rate);
+		p.ch.forEach((c, i) => buf!.copyToChannel(c as Float32Array<ArrayBuffer>, i));
+		bufCache.set(p, buf);
+	}
+	return buf;
+}
 
 interface Playing {
 	node: AudioBufferSourceNode;
@@ -27,6 +41,7 @@ export default function Mp3Editor() {
 	const [playhead, setPlayhead] = useState<number | null>(null);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
+	const [note, setNote] = useState("");
 	const canvas = useRef<HTMLCanvasElement>(null);
 	const ctxRef = useRef<AudioContext>(undefined);
 	const playRef = useRef<Playing>(undefined);
@@ -40,7 +55,11 @@ export default function Mp3Editor() {
 	// No selection means "the whole clip".
 	const [a, b] = sel ?? [0, dur];
 
-	const peak = useMemo(() => (pcm ? E.peakDb(pcm, a, b) : -Infinity), [pcm, a, b]);
+	// Exact for small ranges; a bucket-based estimate otherwise (a full scan on every drag move would freeze long clips).
+	const peak = useMemo(() => {
+		if (!pcm) return -Infinity;
+		return (b - a) * pcm.rate * pcm.ch.length <= 4e6 ? E.peakDb(pcm, a, b) : E.peakDbEstimate(pcm, a, b);
+	}, [pcm, a, b]);
 	const clips = peak + pending > 0;
 
 	const stop = useCallback(() => {
@@ -80,14 +99,25 @@ export default function Mp3Editor() {
 			stop();
 			const ctx = (ctxRef.current ??= new AudioContext());
 			const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-			const ch = Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i).slice());
-			hist.current = new E.History({ rate: buf.sampleRate, ch });
+			// Views into the decoded buffer: no second copy of the whole clip.
+			const ch = Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i));
+			const first: E.Pcm = { rate: buf.sampleRate, ch };
+			bufCache.set(first, buf);
+			const h = new E.History(first);
+			const mb = (E.frames(first) * ch.length * 4) / 1e6;
+			// Long clips: keep fewer undo snapshots, each one is a full copy.
+			h.maxUndo = mb > 300 ? 1 : 3;
+			hist.current = h;
+			setNote(mb > 300 ? `Large file (~${Math.round(mb)} MB in memory): undo history is limited to ${h.maxUndo} step.` : "");
 			setName(file.name);
 			setSel(null);
 			setPending(0);
 			rerender();
 		} catch (e) {
-			setError(e instanceof Error ? e.message : "Could not decode that file.");
+			setError(
+				(e instanceof Error ? e.message : "Could not decode that file.") +
+					" Very long files can run out of memory; try a shorter or lower-quality file.",
+			);
 		}
 	};
 
@@ -95,10 +125,8 @@ export default function Mp3Editor() {
 	const startAt = (p: E.Pcm, offset: number, end: number, delay = 0) => {
 		const ctx = (ctxRef.current ??= new AudioContext());
 		void ctx.resume();
-		const buf = ctx.createBuffer(p.ch.length, E.frames(p), p.rate);
-		p.ch.forEach((c, i) => buf.copyToChannel(c as Float32Array<ArrayBuffer>, i));
 		const node = ctx.createBufferSource();
-		node.buffer = buf;
+		node.buffer = audioBufferFor(ctx, p);
 		const gain = ctx.createGain();
 		node.connect(gain).connect(ctx.destination);
 		const when = ctx.currentTime + delay;
@@ -195,12 +223,20 @@ export default function Mp3Editor() {
 			g.fillStyle = css.getPropertyValue("--sel");
 			g.fillRect(x(sel[0]), 0, x(sel[1]) - x(sel[0]), H);
 		}
-		const pk = E.peaks(pcm, Math.max(1, Math.floor(w)));
+		// Cached per snapshot; repainting for the playhead is O(width), not O(samples).
+		const pk = E.cachedPeaks(pcm);
+		const nb = pk.length / 2;
 		g.fillStyle = css.getPropertyValue("--wave");
 		for (let i = 0; i < w; i++) {
-			const lo = pk[i * 2] * (H / 2);
-			const hi = pk[i * 2 + 1] * (H / 2);
-			g.fillRect(i, H / 2 - hi, 1, Math.max(1, hi - lo));
+			const s = Math.floor((i * nb) / w);
+			const e = Math.min(nb, Math.max(s + 1, Math.floor(((i + 1) * nb) / w)));
+			let lo = 0;
+			let hi = 0;
+			for (let k = s; k < e; k++) {
+				lo = Math.min(lo, pk[k * 2]);
+				hi = Math.max(hi, pk[k * 2 + 1]);
+			}
+			g.fillRect(i, H / 2 - hi * (H / 2), 1, Math.max(1, (hi - lo) * (H / 2)));
 		}
 		if (playhead != null) {
 			g.fillStyle = css.getPropertyValue("--head");
@@ -220,8 +256,9 @@ export default function Mp3Editor() {
 	return (
 		<div className="mp3">
 			<h1>🎚️ MP3 Editor</h1>
-			<input type="file" accept="audio/*,.mp3" onChange={(e) => e.target.files?.[0] && load(e.target.files[0])} />
+			<FileDrop accept="audio/*,.mp3" onFile={load} label="Drop an MP3 here, or click to choose" fileName={pcm ? name : undefined} />
 			{error && <p role="alert">{error}</p>}
+			{note && <p className="mp3-info">{note}</p>}
 			{pcm && (
 				<>
 					<canvas

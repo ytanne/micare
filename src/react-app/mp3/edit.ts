@@ -98,14 +98,38 @@ export function peaks(p: Pcm, buckets: number): Float32Array {
 	return out;
 }
 
-/** Linear undo/redo history of immutable snapshots. */
+const peakCache = new WeakMap<Pcm, Float32Array>();
+export const PEAK_BUCKETS = 8000;
+
+/** Waveform peaks computed once per snapshot (a full pass over a long clip is expensive). */
+export function cachedPeaks(p: Pcm): Float32Array {
+	let pk = peakCache.get(p);
+	if (!pk) peakCache.set(p, (pk = peaks(p, Math.max(1, Math.min(PEAK_BUCKETS, frames(p))))));
+	return pk;
+}
+
+/** Cheap peak estimate for [a, b] from cached bucket peaks (slightly pessimistic at the edges). */
+export function peakDbEstimate(p: Pcm, a: number, b: number): number {
+	const pk = cachedPeaks(p);
+	const n = pk.length / 2;
+	const d = duration(p);
+	const s = Math.max(0, Math.floor((Math.min(a, b) / d) * n));
+	const e = Math.min(n, Math.max(s + 1, Math.ceil((Math.max(a, b) / d) * n)));
+	let peak = 0;
+	for (let k = s; k < e; k++) peak = Math.max(peak, -pk[k * 2], pk[k * 2 + 1]);
+	return 20 * Math.log10(peak);
+}
+
+/** Undo/redo history of immutable snapshots. Old snapshots beyond `maxUndo` are dropped to bound memory. */
 export class History {
 	private past: Pcm[] = [];
 	private future: Pcm[] = [];
+	maxUndo = 3;
 	constructor(public current: Pcm) {}
 
 	push(next: Pcm) {
 		this.past.push(this.current);
+		while (this.past.length > this.maxUndo) this.past.shift();
 		this.current = next;
 		this.future = [];
 	}
