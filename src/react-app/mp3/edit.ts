@@ -1,12 +1,30 @@
 // Pure audio editing on raw PCM. No DOM / React / Web Audio here.
+//
+// Samples are stored as 16-bit integers: half the memory of Float32, which matters for
+// long clips (30 min stereo = ~317 MB instead of ~635 MB). Int16 is also what the MP3
+// encoder wants, so export needs no conversion.
 
 export interface Pcm {
 	rate: number;
-	ch: Float32Array[]; // one array per channel, equal lengths
+	ch: Int16Array[]; // one array per channel, equal lengths
 }
 
 export const frames = (p: Pcm) => p.ch[0]?.length ?? 0;
 export const duration = (p: Pcm) => frames(p) / p.rate;
+
+const clamp16 = (x: number) => (x > 32767 ? 32767 : x < -32768 ? -32768 : Math.round(x));
+
+/**
+ * Convert float samples (-1..1) to Int16 **in place**, reusing the same memory: no second
+ * allocation, so loading a long clip doesn't need float + int copies at the same time.
+ * `f` must not be used afterwards. Safe because sample i is read (bytes 4i..4i+3) before the
+ * write that could touch it (bytes 2j..2j+1 with j <= i).
+ */
+export function floatToInt16InPlace(f: Float32Array): Int16Array {
+	const out = new Int16Array(f.buffer, f.byteOffset, f.length);
+	for (let i = 0; i < f.length; i++) out[i] = clamp16(f[i] * 32768);
+	return out;
+}
 
 const clampIdx = (p: Pcm, t: number) => Math.max(0, Math.min(frames(p), Math.round(t * p.rate)));
 const range = (p: Pcm, a: number, b: number): [number, number] => {
@@ -14,7 +32,7 @@ const range = (p: Pcm, a: number, b: number): [number, number] => {
 	const j = clampIdx(p, Math.max(a, b));
 	return [i, j];
 };
-const map = (p: Pcm, f: (c: Float32Array) => Float32Array): Pcm => ({ rate: p.rate, ch: p.ch.map(f) });
+const map = (p: Pcm, f: (c: Int16Array) => Int16Array): Pcm => ({ rate: p.rate, ch: p.ch.map(f) });
 
 /** Keep only [a, b] seconds. */
 export function trim(p: Pcm, a: number, b: number): Pcm {
@@ -26,25 +44,25 @@ export function trim(p: Pcm, a: number, b: number): Pcm {
 export function cut(p: Pcm, a: number, b: number): Pcm {
 	const [i, j] = range(p, a, b);
 	return map(p, (c) => {
-		const out = new Float32Array(c.length - (j - i));
+		const out = new Int16Array(c.length - (j - i));
 		out.set(c.subarray(0, i));
 		out.set(c.subarray(j), i);
 		return out;
 	});
 }
 
+// f receives the sample in Int16 units and returns the new value in Int16 units (clamped here).
 function edit(p: Pcm, a: number, b: number, f: (x: number, k: number, n: number) => number): Pcm {
 	const [i, j] = range(p, a, b);
 	return map(p, (c) => {
 		const out = c.slice();
-		for (let k = i; k < j; k++) out[k] = f(c[k], k - i, j - i);
+		for (let k = i; k < j; k++) out[k] = clamp16(f(c[k], k - i, j - i));
 		return out;
 	});
 }
 
-/** Multiply [a, b] by a linear factor (1 = unchanged). Clipping is hard-limited to [-1, 1]. */
-export const gain = (p: Pcm, a: number, b: number, factor: number) =>
-	edit(p, a, b, (x) => Math.max(-1, Math.min(1, x * factor)));
+/** Multiply [a, b] by a linear factor (1 = unchanged). Clipping is hard-limited to full scale. */
+export const gain = (p: Pcm, a: number, b: number, factor: number) => edit(p, a, b, (x) => x * factor);
 
 export const silence = (p: Pcm, a: number, b: number) => edit(p, a, b, () => 0);
 export const fadeIn = (p: Pcm, a: number, b: number) => edit(p, a, b, (x, k, n) => x * (k / n));
@@ -59,12 +77,22 @@ export function reverse(p: Pcm, a: number, b: number): Pcm {
 	});
 }
 
+function peakInt(p: Pcm, i: number, j: number): number {
+	let peak = 0;
+	for (const c of p.ch) {
+		for (let k = i; k < j; k++) {
+			const v = c[k] < 0 ? -c[k] : c[k];
+			if (v > peak) peak = v;
+		}
+	}
+	return peak;
+}
+
 /** Scale [a, b] so its loudest sample reaches `target` (0..1). */
 export function normalize(p: Pcm, a: number, b: number, target = 0.98): Pcm {
 	const [i, j] = range(p, a, b);
-	let peak = 0;
-	for (const c of p.ch) for (let k = i; k < j; k++) peak = Math.max(peak, Math.abs(c[k]));
-	return peak > 0 ? gain(p, a, b, target / peak) : p;
+	const peak = peakInt(p, i, j);
+	return peak > 0 ? gain(p, a, b, (target * 32768) / peak) : p;
 }
 
 export const dbToFactor = (db: number) => 10 ** (db / 20);
@@ -72,12 +100,10 @@ export const dbToFactor = (db: number) => 10 ** (db / 20);
 /** Loudest sample in [a, b] seconds, in dBFS (-Infinity for silence). */
 export function peakDb(p: Pcm, a: number, b: number): number {
 	const [i, j] = range(p, a, b);
-	let peak = 0;
-	for (const c of p.ch) for (let k = i; k < j; k++) peak = Math.max(peak, Math.abs(c[k]));
-	return 20 * Math.log10(peak);
+	return 20 * Math.log10(peakInt(p, i, j) / 32768);
 }
 
-/** Min/max per bucket, for drawing a waveform. Uses the loudest channel per bucket. */
+/** Min/max (-1..1) per bucket, for drawing a waveform. Uses all channels. */
 export function peaks(p: Pcm, buckets: number): Float32Array {
 	const n = frames(p);
 	const out = new Float32Array(buckets * 2);
@@ -92,8 +118,8 @@ export function peaks(p: Pcm, buckets: number): Float32Array {
 				if (c[k] > hi) hi = c[k];
 			}
 		}
-		out[b * 2] = lo;
-		out[b * 2 + 1] = hi;
+		out[b * 2] = lo / 32768;
+		out[b * 2 + 1] = hi / 32768;
 	}
 	return out;
 }

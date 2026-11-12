@@ -1,11 +1,9 @@
 import { Mp3Encoder } from "@breezystack/lamejs";
 import type { Pcm } from "./edit";
 
-const s16 = (x: number) => Math.round(Math.max(-1, Math.min(1, x)) * 32767);
-
 /**
- * Encode to MP3. Converts to Int16 one chunk at a time (never a full-length copy) and
- * yields to the event loop between chunks so the UI stays responsive on long clips.
+ * Encode to MP3 straight from the Int16 samples. Yields to the event loop between
+ * chunks so the UI stays responsive on long clips.
  */
 export async function encodeMp3(p: Pcm, kbps = 192, onProgress?: (f: number) => void): Promise<Blob> {
 	const channels = Math.min(2, p.ch.length);
@@ -13,16 +11,9 @@ export async function encodeMp3(p: Pcm, kbps = 192, onProgress?: (f: number) => 
 	const L = p.ch[0];
 	const R = channels === 2 ? p.ch[1] : undefined;
 	const CHUNK = 1152 * 20;
-	const l16 = new Int16Array(CHUNK);
-	const r16 = R && new Int16Array(CHUNK);
 	const parts: Uint8Array[] = [];
 	for (let i = 0; i < L.length; i += CHUNK) {
-		const len = Math.min(CHUNK, L.length - i);
-		for (let k = 0; k < len; k++) {
-			l16[k] = s16(L[i + k]);
-			if (r16 && R) r16[k] = s16(R[i + k]);
-		}
-		const buf = enc.encodeBuffer(l16.subarray(0, len), r16?.subarray(0, len));
+		const buf = enc.encodeBuffer(L.subarray(i, i + CHUNK), R?.subarray(i, i + CHUNK));
 		if (buf.length) parts.push(buf.slice());
 		onProgress?.(i / L.length);
 		await new Promise((r) => setTimeout(r));
@@ -55,7 +46,7 @@ export function encodeWav(p: Pcm): Blob {
 	for (let i = 0; i < n; i += CHUNK) {
 		const len = Math.min(CHUNK, n - i);
 		const out = new Int16Array(len * ch);
-		for (let k = 0; k < len; k++) for (let c = 0; c < ch; c++) out[k * ch + c] = s16(p.ch[c][i + k]);
+		for (let k = 0; k < len; k++) for (let c = 0; c < ch; c++) out[k * ch + c] = p.ch[c][i + k];
 		parts.push(out);
 	}
 	return new Blob(parts, { type: "audio/wav" });

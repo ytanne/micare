@@ -5,28 +5,22 @@ import { encodeMp3, encodeWav } from "./encode";
 import "./Mp3Editor.css";
 
 const H = 160;
-// Small lead time so a seamless source hand-off is scheduled sample-accurately.
-const HANDOFF = 0.03;
 
-// One AudioBuffer per snapshot, built lazily. The freshly decoded clip reuses the decoder's own
-// buffer, so playing an unedited file costs no extra memory. Entries are freed with the snapshot.
-const bufCache = new WeakMap<E.Pcm, AudioBuffer>();
-function audioBufferFor(ctx: AudioContext, p: E.Pcm): AudioBuffer {
-	let buf = bufCache.get(p);
-	if (!buf) {
-		buf = ctx.createBuffer(p.ch.length, E.frames(p), p.rate);
-		p.ch.forEach((c, i) => buf!.copyToChannel(c as Float32Array<ArrayBuffer>, i));
-		bufCache.set(p, buf);
-	}
-	return buf;
-}
+// Playback streams the clip in small chunks instead of building one AudioBuffer for the whole
+// file (which for a 30 min clip is hundreds of MB, and gets copied again after every edit).
+const CHUNK_SEC = 1; // size of each scheduled AudioBuffer
+const LOOKAHEAD = 5; // keep this many seconds scheduled ahead of the playhead
+const PUMP_MS = 500; // how often to top the queue up
 
 interface Playing {
-	node: AudioBufferSourceNode;
-	gain: GainNode;
-	when: number; // ctx time the source starts producing sound
+	gain: GainNode; // live volume preview
+	nodes: Set<AudioBufferSourceNode>;
+	when: number; // ctx time at which clip position `offset` is heard
 	offset: number; // clip position (s) at `when`
-	end: number; // clip position (s) where playback stops
+	endFrame: number;
+	nextFrame: number; // next frame to schedule
+	timer: number;
+	gainFrom: number; // gain automation is only rewritten from this ctx time on
 }
 
 export default function Mp3Editor() {
@@ -64,28 +58,36 @@ export default function Mp3Editor() {
 
 	const stop = useCallback(() => {
 		cancelAnimationFrame(raf.current);
-		try { playRef.current?.node.stop(); } catch { /* already stopped */ }
+		const p = playRef.current;
+		if (p) {
+			clearInterval(p.timer);
+			for (const n of p.nodes) {
+				n.onended = null;
+				try { n.stop(); } catch { /* not started / already stopped */ }
+			}
+			p.gain.disconnect();
+		}
 		playRef.current = undefined;
 		setPlayhead(null);
 	}, []);
 	useEffect(() => () => { stop(); void ctxRef.current?.close(); }, [stop]);
 
-	// Drive the pending gain on the running GainNode: 1.0 outside the range,
-	// the slider's factor inside. Re-run whenever the slider or range changes;
-	// the source is never restarted, so playback is uninterrupted.
+	// Drive the pending gain on the running GainNode: 1.0 outside the range, the slider's
+	// factor inside. Rewrites only automation from `gainFrom` onwards, so audio that is
+	// already queued keeps the gain it was scheduled with. The source is never restarted.
 	const scheduleGain = useCallback(() => {
 		const ctx = ctxRef.current;
 		const p = playRef.current;
 		if (!ctx || !p) return;
 		const [ra, rb] = rangeRef.current;
 		const factor = E.dbToFactor(pendingRef.current);
-		const now = ctx.currentTime;
-		const pos = p.offset + Math.max(0, now - p.when);
+		const from = Math.max(ctx.currentTime, p.gainFrom);
+		const pos = p.offset + Math.max(0, from - p.when);
 		const g = p.gain.gain;
-		g.cancelScheduledValues(now);
-		g.setValueAtTime(pos >= ra && pos < rb ? factor : 1, now);
-		if (pos < ra) g.setValueAtTime(factor, now + (ra - pos));
-		if (pos < rb) g.setValueAtTime(1, now + (rb - pos));
+		g.cancelScheduledValues(from);
+		g.setValueAtTime(pos >= ra && pos < rb ? factor : 1, from);
+		if (pos < ra) g.setValueAtTime(factor, from + (ra - pos));
+		if (pos < rb) g.setValueAtTime(1, from + (rb - pos));
 	}, []);
 	useEffect(() => {
 		rangeRef.current = [a, b];
@@ -96,22 +98,23 @@ export default function Mp3Editor() {
 	const load = async (file: File) => {
 		try {
 			setError("");
+			setNote("");
 			stop();
-			const ctx = (ctxRef.current ??= new AudioContext());
-			const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-			// Views into the decoded buffer: no second copy of the whole clip.
-			const ch = Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i));
-			const first: E.Pcm = { rate: buf.sampleRate, ch };
-			bufCache.set(first, buf);
-			const h = new E.History(first);
-			const mb = (E.frames(first) * ch.length * 4) / 1e6;
-			// Long clips: keep fewer undo snapshots, each one is a full copy.
-			h.maxUndo = mb > 300 ? 1 : 3;
-			hist.current = h;
-			setNote(mb > 300 ? `Large file (~${Math.round(mb)} MB in memory): undo history is limited to ${h.maxUndo} step.` : "");
-			setName(file.name);
+			hist.current = undefined; // release the previous clip before decoding the next
 			setSel(null);
 			setPending(0);
+			rerender();
+			const ctx = (ctxRef.current ??= new AudioContext());
+			const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+			// Convert to 16-bit in place (no extra allocation); edits then produce compact copies.
+			const ch = Array.from({ length: buf.numberOfChannels }, (_, i) => E.floatToInt16InPlace(buf.getChannelData(i)));
+			const h = new E.History({ rate: buf.sampleRate, ch });
+			const mb = (E.frames(h.current) * ch.length * 2) / 1e6;
+			// Long clips: keep fewer undo snapshots, each one is a full copy.
+			h.maxUndo = mb > 150 ? 1 : 3;
+			hist.current = h;
+			if (mb > 150) setNote(`Large file (~${Math.round(mb)} MB in memory): undo history is limited to ${h.maxUndo} step.`);
+			setName(file.name);
 			rerender();
 		} catch (e) {
 			setError(
@@ -121,29 +124,63 @@ export default function Mp3Editor() {
 		}
 	};
 
-	// Start `p` at clip position `offset`, `delay` seconds from now, and track it as the current playback.
-	const startAt = (p: E.Pcm, offset: number, end: number, delay = 0) => {
-		const ctx = (ctxRef.current ??= new AudioContext());
-		void ctx.resume();
-		const node = ctx.createBufferSource();
-		node.buffer = audioBufferFor(ctx, p);
-		const gain = ctx.createGain();
-		node.connect(gain).connect(ctx.destination);
-		const when = ctx.currentTime + delay;
-		node.start(when, offset, Math.max(0.01, end - offset));
-		node.onended = () => { if (playRef.current?.node === node) stop(); };
-		playRef.current = { node, gain, when, offset, end };
-	};
+	// Schedule enough chunks to stay `LOOKAHEAD` seconds ahead. Always reads the *current* snapshot,
+	// so after "Apply" the not-yet-queued audio comes from the edited clip without restarting.
+	const pump = useCallback(() => {
+		const p = playRef.current;
+		const ctx = ctxRef.current;
+		const src = hist.current?.current;
+		if (!p || !ctx || !src) return;
+		const chunk = Math.round(CHUNK_SEC * src.rate);
+		const total = E.frames(src);
+		while (p.nextFrame < Math.min(p.endFrame, total) && p.when + (p.nextFrame / src.rate - p.offset) < ctx.currentTime + LOOKAHEAD) {
+			const f0 = p.nextFrame;
+			const f1 = Math.min(p.endFrame, total, f0 + chunk);
+			const buf = ctx.createBuffer(src.ch.length, f1 - f0, src.rate);
+			src.ch.forEach((c, i) => {
+				const out = buf.getChannelData(i);
+				for (let k = 0; k < out.length; k++) out[k] = c[f0 + k] / 32768;
+			});
+			const node = ctx.createBufferSource();
+			node.buffer = buf;
+			node.connect(p.gain);
+			node.start(p.when + (f0 / src.rate - p.offset));
+			p.nodes.add(node);
+			node.onended = () => {
+				p.nodes.delete(node);
+				if (playRef.current === p && p.nextFrame >= p.endFrame && p.nodes.size === 0) stop();
+			};
+			p.nextFrame = f1;
+		}
+	}, [stop]);
 
 	const play = () => {
 		if (!pcm) return;
 		stop();
-		startAt(pcm, a, b);
+		const ctx = (ctxRef.current ??= new AudioContext());
+		void ctx.resume();
+		const startFrame = Math.max(0, Math.round(a * pcm.rate));
+		const endFrame = Math.min(E.frames(pcm), Math.round(b * pcm.rate));
+		if (endFrame <= startFrame) return;
+		const gain = ctx.createGain();
+		gain.connect(ctx.destination);
+		const p: Playing = {
+			gain,
+			nodes: new Set(),
+			when: ctx.currentTime + 0.05,
+			offset: startFrame / pcm.rate,
+			endFrame,
+			nextFrame: startFrame,
+			timer: window.setInterval(pump, PUMP_MS),
+			gainFrom: 0,
+		};
+		playRef.current = p;
+		pump();
 		scheduleGain();
 		const tick = () => {
-			const p = playRef.current;
-			if (!p) return;
-			setPlayhead(p.offset + Math.max(0, ctxRef.current!.currentTime - p.when));
+			const cur = playRef.current;
+			if (!cur) return;
+			setPlayhead(cur.offset + Math.max(0, ctx.currentTime - cur.when));
 			raf.current = requestAnimationFrame(tick);
 		};
 		tick();
@@ -159,24 +196,13 @@ export default function Mp3Editor() {
 		rerender();
 	};
 
-	// Bake the slider's gain into the audio. If playing, hand off to the new
-	// audio at the same position so the music doesn't restart.
+	// Bake the slider's gain into the audio. If playing, playback carries on: chunks already
+	// queued keep the live gain, later chunks are read from the baked audio at unity gain.
 	const commitGain = () => {
 		if (!pcm || pending === 0 || b - a <= 0) return;
-		const next = E.gain(pcm, a, b, E.dbToFactor(pending));
-		const cur = playRef.current;
-		if (cur) {
-			const ctx = ctxRef.current!;
-			const pos = cur.offset + Math.max(0, ctx.currentTime - cur.when) + HANDOFF;
-			if (pos < cur.end) {
-				const old = cur.node;
-				startAt(next, pos, cur.end, HANDOFF);
-				old.stop(playRef.current!.when);
-			} else {
-				stop();
-			}
-		}
-		hist.current!.push(next);
+		const p = playRef.current;
+		if (p) p.gainFrom = p.when + (p.nextFrame / pcm.rate - p.offset);
+		hist.current!.push(E.gain(pcm, a, b, E.dbToFactor(pending)));
 		pendingRef.current = 0;
 		setPending(0);
 		rerender();
@@ -212,10 +238,16 @@ export default function Mp3Editor() {
 		if (!c || !pcm) return;
 		const w = c.clientWidth;
 		const dpr = window.devicePixelRatio || 1;
-		c.width = w * dpr;
-		c.height = H * dpr;
+		// Resizing reallocates the backing store, so only do it when the size really changed
+		// (this effect runs every animation frame during playback).
+		const pw = Math.round(w * dpr);
+		const ph = Math.round(H * dpr);
+		if (c.width !== pw || c.height !== ph) {
+			c.width = pw;
+			c.height = ph;
+		}
 		const g = c.getContext("2d")!;
-		g.scale(dpr, dpr);
+		g.setTransform(dpr, 0, 0, dpr, 0, 0);
 		const css = getComputedStyle(c);
 		g.clearRect(0, 0, w, H);
 		const x = (t: number) => (t / dur) * w;
