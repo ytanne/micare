@@ -1,0 +1,62 @@
+.scan {
+	display: grid;
+	gap: 12px;
+	max-width: 960px;
+	margin: 0 auto;
+	padding: 16px;
+}
+
+.scan-row {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	align-items: center;
+}
+
+.scan-panes {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+	gap: 12px;
+}
+
+.scan-panes canvas {
+	width: 100%;
+	height: auto;
+	border: 1px solid #888;
+	border-radius: 4px;
+	background: #fff;
+}
+
+.scan-edit {
+	touch-action: none;
+	cursor: crosshair;
+}
+
+.scan-thumbs {
+	display: flex;
+	gap: 8px;
+	overflow-x: auto;
+	padding-bottom: 4px;
+}
+
+.scan-thumb {
+	flex: none;
+	display: grid;
+	gap: 4px;
+	padding: 4px;
+	border: 2px solid transparent;
+	border-radius: 6px;
+	cursor: pointer;
+	font-size: 0.75rem;
+	text-align: center;
+}
+
+.scan-thumb.on {
+	border-color: #4a90d9;
+}
+
+.scan-thumb canvas {
+	width: 72px;
+	height: 72px;
+	object-fit: contain;
+}

@@ -37,4 +37,11 @@ export const utils: Util[] = [
 		emoji: "🎚️",
 		component: lazy(() => import("./mp3/Mp3Editor")),
 	},
+	{
+		id: "scan",
+		title: "Image → PDF Scanner",
+		description: "Crop, straighten, and clean up photos of documents into a PDF.",
+		emoji: "📷",
+		component: lazy(() => import("./scan/Scan")),
+	},
 ];
