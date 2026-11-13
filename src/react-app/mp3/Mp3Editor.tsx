@@ -33,6 +33,7 @@ export default function Mp3Editor() {
 	const [pending, setPending] = useState(0);
 	const [kbps, setKbps] = useState(192);
 	const [playhead, setPlayhead] = useState<number | null>(null);
+	const [paused, setPaused] = useState(false);
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
 	const [note, setNote] = useState("");
@@ -69,6 +70,9 @@ export default function Mp3Editor() {
 		}
 		playRef.current = undefined;
 		setPlayhead(null);
+		// Stopping while paused must leave the context running for whatever plays next.
+		setPaused(false);
+		void ctxRef.current?.resume();
 	}, []);
 	useEffect(() => () => { stop(); void ctxRef.current?.close(); }, [stop]);
 
@@ -184,6 +188,17 @@ export default function Mp3Editor() {
 			raf.current = requestAnimationFrame(tick);
 		};
 		tick();
+	};
+
+	// Pause by suspending the context: currentTime and every queued chunk freeze together, so the
+	// playhead, chunk queue and volume automation (all keyed to currentTime) resume exactly in place.
+	const pause = () => {
+		setPaused(true);
+		void ctxRef.current?.suspend();
+	};
+	const resume = () => {
+		setPaused(false);
+		void ctxRef.current?.resume();
 	};
 
 	// Apply an edit to the selection (or whole clip), pushing an undo step.
@@ -313,7 +328,14 @@ export default function Mp3Editor() {
 						{fmt(dur)} total · {sel ? `selected ${fmt(a)} – ${fmt(b)} (${(b - a).toFixed(2)}s)` : "no selection — edits apply to the whole clip; drag the waveform to select"}
 					</p>
 					<div className="mp3-row">
-						<button onClick={playhead == null ? play : stop}>{playhead == null ? "▶ Play" : "■ Stop"}</button>
+						{playhead == null ? (
+							<button onClick={play}>▶ Play</button>
+						) : (
+							<>
+								<button onClick={paused ? resume : pause}>{paused ? "▶ Resume" : "⏸ Pause"}</button>
+								<button onClick={stop}>■ Stop</button>
+							</>
+						)}
 						<button disabled={!h?.canUndo} onClick={() => undoRedo("undo")}>Undo</button>
 						<button disabled={!h?.canRedo} onClick={() => undoRedo("redo")}>Redo</button>
 					</div>
