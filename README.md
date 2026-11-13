@@ -21,4 +21,4 @@ npm run check   # tsc + build + wrangler dry-run
 npm run deploy  # deploy to Cloudflare Workers
 ```
 
-See [`CLAUDE.md`](./CLAUDE.md) for architecture notes and how to add a new game or utility.
+See [`CLAUDE.md`](./CLAUDE.md) for architecture notes and how to add a new game.
