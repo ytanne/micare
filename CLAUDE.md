@@ -9,9 +9,10 @@ Personal playground for AI-agentic development: browser games (Tetris, Star Defe
 
 ## Architecture
 - Two TS projects: `src/react-app` (browser) and `src/worker` (Workers). Don't cross-import environment APIs. `src/shared` is used by both: no DOM, no Workers APIs.
-- Routing: custom hash router in `App.tsx` (`#/tetris`). First segment matches `games[].id` in `games.ts` or `utils[].id` in `utils.ts` (one shared namespace; `utils` is the Utils tab itself); the rest is the `param` prop. No match renders `Landing`.
+- Routing: custom hash router in `App.tsx` (`#/tetris`). First segment matches `games[].id` in `games.ts` or `utils[].id` in `utils.ts` (one shared namespace, plus `experiments[].id` from `experiments.ts`; `utils` and `experiments` are the tab routes); the rest is the `param` prop. No match renders `Landing`.
 - Add a game: create `src/react-app/<game>/`, then add an entry (`id`, `title`, `description`, `emoji`, `lazy()` component) to `games.ts`.
 - Add a utility: create `src/react-app/<util>/`, add an entry to `utils.ts`. Use the shared `FileDrop` component (`src/react-app/FileDrop.tsx`) for file input, not a raw `<input type="file">`.
+- Add an experiment (Experiments tab): create `src/react-app/<name>/`, add an entry to `experiments.ts`. Heavy deps (e.g. `three`) must only be imported inside the lazy component tree so they stay out of the main bundle. Solar System: `solar-system/bodies.ts` (data), `scene.ts` (three.js, no React; `dispose()` must free GPU resources), `SolarSystem.tsx` (UI).
 - Keep game logic DOM/React-free (`logic.ts` / `engine.ts`); UI and canvas rendering live in separate files.
 - Shooter world is fixed 480x800 (`W`x`H` in `shooter/engine.ts`).
 

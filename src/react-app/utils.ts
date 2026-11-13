@@ -14,7 +14,7 @@ export interface Util {
 }
 
 // To add a utility: create its component, then add an entry here.
-// Its id must not collide with a game id or "utils" (the tab route).
+// Its id must not collide with a game id or "utils"/"experiments" (the tab route).
 export const utils: Util[] = [
 	{
 		id: "epub",
