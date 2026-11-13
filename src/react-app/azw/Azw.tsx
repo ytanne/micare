@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import FileDrop from "../FileDrop";
 import { epubToAzw } from "./azw";
 
 interface Result { url: string; name: string; title: string; images: number; kb: number }
@@ -32,7 +33,7 @@ export default function Azw() {
 	return (
 		<div style={{ display: "grid", gap: 12, maxWidth: 800, margin: "0 auto", padding: 16 }}>
 			<h1>📚 EPUB → AZW</h1>
-			<input type="file" accept=".epub,application/epub+zip" onChange={(e) => e.target.files?.[0] && convert(e.target.files[0])} />
+			<FileDrop accept=".epub,application/epub+zip" onFile={convert} label="Drop an EPUB here, or click to choose" disabled={busy} />
 			{busy && <p>Converting…</p>}
 			{error && <p role="alert">{error}</p>}
 			{res && (

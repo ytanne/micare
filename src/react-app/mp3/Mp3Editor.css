@@ -30,6 +30,22 @@
 	align-items: center;
 }
 
-.mp3-row input[type="number"] {
-	width: 4.5em;
+.mp3-slider {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.mp3-slider input[type="range"] {
+	width: 220px;
+}
+
+.mp3-slider output {
+	min-width: 5.5em;
+	font-variant-numeric: tabular-nums;
+}
+
+.mp3-clip {
+	color: #e5484d;
+	font-weight: 600;
 }

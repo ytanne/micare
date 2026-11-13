@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import FileDrop from "../FileDrop";
 import { openBook, renderChapter, saveBook, type Book } from "./epub";
 
 export default function Epub() {
@@ -60,7 +61,7 @@ export default function Epub() {
 	return (
 		<div style={{ display: "grid", gap: 12, maxWidth: 800, margin: "0 auto", padding: 16 }}>
 			<h1>📖 EPUB Viewer / Editor</h1>
-			<input type="file" accept=".epub,application/epub+zip" onChange={(e) => e.target.files?.[0] && load(e.target.files[0])} />
+			<FileDrop accept=".epub,application/epub+zip" onFile={load} label="Drop an EPUB here, or click to choose" fileName={book ? name : undefined} />
 			{error && <p role="alert">{error}</p>}
 			{book && (
 				<>
