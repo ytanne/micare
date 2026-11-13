@@ -1,18 +1,21 @@
 import { games } from "./games";
 import { utils } from "./utils";
+import { experiments } from "./experiments";
 
-export type LandingTab = "games" | "utils";
+export type LandingTab = "games" | "utils" | "experiments";
 
 const tabs: { id: LandingTab; label: string; href: string }[] = [
 	{ id: "games", label: "Games", href: "#/" },
 	{ id: "utils", label: "Utils", href: "#/utils" },
+	{ id: "experiments", label: "Experiments", href: "#/experiments" },
 ];
 
 function Landing({ tab }: { tab: LandingTab }) {
-	const items = tab === "games" ? games : utils;
+	const items = tab === "games" ? games : tab === "utils" ? utils : experiments;
+	const heading = { games: "Pick a game", utils: "Pick a utility", experiments: "Pick an experiment" }[tab];
 	return (
 		<main className="landing">
-			<h1>{tab === "games" ? "Pick a game" : "Pick a utility"}</h1>
+			<h1>{heading}</h1>
 			<nav className="landing-tabs" role="tablist">
 				{tabs.map((t) => (
 					<a
