@@ -2,6 +2,7 @@
 	--wave: #4a90d9;
 	--sel: rgba(74, 144, 217, 0.3);
 	--head: #e5484d;
+	--mark: #f5a524;
 	display: grid;
 	gap: 12px;
 	max-width: 800px;
@@ -48,4 +49,15 @@
 .mp3-clip {
 	color: #e5484d;
 	font-weight: 600;
+}
+
+.mp3-chip {
+	padding: 2px 8px;
+	font-size: 0.85rem;
+	font-variant-numeric: tabular-nums;
+	border-color: var(--mark);
+}
+
+.mp3-row input[type="number"] {
+	width: 4.5em;
 }

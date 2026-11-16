@@ -34,6 +34,12 @@ export default function Mp3Editor() {
 	const [kbps, setKbps] = useState(192);
 	const [playhead, setPlayhead] = useState<number | null>(null);
 	const [paused, setPaused] = useState(false);
+	// Split markers (seconds, sorted). They are positions in the current timeline, so edits that
+	// change it (trim, cut, undo/redo, new file) clear them.
+	const [marks, setMarks] = useState<number[]>([]);
+	const [silenceDb, setSilenceDb] = useState(-45);
+	const [minGap, setMinGap] = useState(1);
+	const [splitInfo, setSplitInfo] = useState("");
 	const [busy, setBusy] = useState("");
 	const [error, setError] = useState("");
 	const [note, setNote] = useState("");
@@ -106,6 +112,8 @@ export default function Mp3Editor() {
 			stop();
 			hist.current = undefined; // release the previous clip before decoding the next
 			setSel(null);
+			setMarks([]);
+			setSplitInfo("");
 			setPending(0);
 			rerender();
 			const ctx = (ctxRef.current ??= new AudioContext());
@@ -207,7 +215,10 @@ export default function Mp3Editor() {
 		stop();
 		hist.current!.push(f(pcm, a, b));
 		setPending(0);
-		if (after === "clear") setSel(null);
+		if (after === "clear") {
+			setSel(null);
+			setMarks([]); // trim/cut change the timeline
+		}
 		rerender();
 	};
 
@@ -227,8 +238,18 @@ export default function Mp3Editor() {
 		stop();
 		hist.current![k]();
 		setSel(null);
+		setMarks([]);
 		setPending(0);
 		rerender();
+	};
+
+	const base = name.replace(/\.[^.]+$/, "");
+	const download = (blob: Blob, filename: string) => {
+		const link = document.createElement("a");
+		link.href = URL.createObjectURL(blob);
+		link.download = filename;
+		link.click();
+		URL.revokeObjectURL(link.href);
 	};
 
 	const save = async (kind: "mp3" | "wav") => {
@@ -236,11 +257,53 @@ export default function Mp3Editor() {
 		setBusy("Encoding…");
 		try {
 			const blob = kind === "wav" ? encodeWav(pcm) : await encodeMp3(pcm, kbps, (f) => setBusy(`Encoding ${Math.round(f * 100)}%`));
-			const link = document.createElement("a");
-			link.href = URL.createObjectURL(blob);
-			link.download = name.replace(/\.[^.]+$/, "") + "-edited." + kind;
-			link.click();
-			URL.revokeObjectURL(link.href);
+			download(blob, `${base}-edited.${kind}`);
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+		setBusy("");
+	};
+
+	// Add markers, keeping them sorted, at least 50 ms apart and away from the clip edges.
+	const addMarks = (times: number[]) =>
+		setMarks((cur) =>
+			[...cur, ...times]
+				.sort((x, y) => x - y)
+				.filter((t, i, all) => t > 0.05 && t < dur - 0.05 && (i === 0 || t - all[i - 1] > 0.05)),
+		);
+
+	// Marker goes at the playhead when playing/paused, else at the selection start.
+	const markerTime = playhead ?? sel?.[0] ?? null;
+
+	const findGaps = async () => {
+		if (!pcm) return;
+		setBusy("Scanning for silence…");
+		await new Promise((r) => setTimeout(r)); // let the message paint before the scan
+		const found = E.findSilences(pcm, silenceDb, minGap);
+		addMarks(found);
+		setSplitInfo(found.length ? `Found ${found.length} silent gap${found.length === 1 ? "" : "s"}.` : "No silent gaps found; try a higher threshold or a shorter gap.");
+		setBusy("");
+	};
+
+	// Encode each part one at a time (bounded memory; parts are zero-copy views) and zip them.
+	const exportParts = async () => {
+		if (!pcm || !marks.length) return;
+		setBusy("Preparing…");
+		try {
+			const { default: JSZip } = await import("jszip");
+			const zip = new JSZip();
+			const cuts = [0, ...marks, dur];
+			const count = cuts.length - 1;
+			const digits = Math.max(2, String(count).length);
+			for (let i = 0; i < count; i++) {
+				const blob = await encodeMp3(E.view(pcm, cuts[i], cuts[i + 1]), kbps, (f) =>
+					setBusy(`Encoding part ${i + 1}/${count} · ${Math.round(f * 100)}%`),
+				);
+				zip.file(`${base}-${String(i + 1).padStart(digits, "0")}.mp3`, blob);
+			}
+			// MP3s are already compressed, so store them as they are.
+			const out = await zip.generateAsync({ type: "blob", compression: "STORE" }, (m) => setBusy(`Zipping ${Math.round(m.percent)}%`));
+			download(out, `${base}-parts.zip`);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
 		}
@@ -285,13 +348,15 @@ export default function Mp3Editor() {
 			}
 			g.fillRect(i, H / 2 - hi * (H / 2), 1, Math.max(1, (hi - lo) * (H / 2)));
 		}
+		g.fillStyle = css.getPropertyValue("--mark");
+		for (const t of marks) g.fillRect(x(t) - 1, 0, 2, H);
 		if (playhead != null) {
 			g.fillStyle = css.getPropertyValue("--head");
 			g.fillRect(x(playhead), 0, 2, H);
 		}
-	}, [pcm, sel, playhead, dur]);
+	}, [pcm, sel, playhead, dur, marks]);
 
-	const timeAt = (e: React.PointerEvent) => {
+	const timeAt = (e: React.MouseEvent) => {
 		const r = e.currentTarget.getBoundingClientRect();
 		return Math.max(0, Math.min(dur, ((e.clientX - r.left) / r.width) * dur));
 	};
@@ -323,6 +388,8 @@ export default function Mp3Editor() {
 							setSel(Math.abs(t - drag.current) * pcm.rate > 8 ? [Math.min(drag.current, t), Math.max(drag.current, t)] : null);
 						}}
 						onPointerUp={() => { drag.current = null; }}
+						onDoubleClick={(e) => addMarks([timeAt(e)])}
+						title="Drag to select · double-click to add a split marker"
 					/>
 					<p className="mp3-info">
 						{fmt(dur)} total · {sel ? `selected ${fmt(a)} – ${fmt(b)} (${(b - a).toFixed(2)}s)` : "no selection — edits apply to the whole clip; drag the waveform to select"}
@@ -368,6 +435,36 @@ export default function Mp3Editor() {
 							{clips && " — will clip"}
 						</span>
 					</div>
+					<div className="mp3-row">
+						<strong>Split</strong>
+						<button disabled={markerTime == null} onClick={() => markerTime != null && addMarks([markerTime])}>
+							Add marker {markerTime != null ? `at ${fmt(markerTime)}` : ""}
+						</button>
+						<label>
+							Silence below <input type="number" value={silenceDb} min={-90} max={-10} step={1} onChange={(e) => setSilenceDb(+e.target.value)} /> dB
+						</label>
+						<label>
+							for at least <input type="number" value={minGap} min={0.1} max={30} step={0.1} onChange={(e) => setMinGap(+e.target.value)} /> s
+						</label>
+						<button disabled={!!busy} onClick={findGaps}>Find silent gaps</button>
+					</div>
+					<p className="mp3-info">
+						{marks.length === 0
+							? "Double-click the waveform (or play and press Add marker) to place split points, or let it find silent gaps."
+							: `${marks.length} marker${marks.length === 1 ? "" : "s"} → ${marks.length + 1} parts. Click a marker to remove it.`}
+						{splitInfo && ` ${splitInfo}`}
+					</p>
+					{marks.length > 0 && (
+						<div className="mp3-row">
+							{marks.map((t) => (
+								<button key={t} className="mp3-chip" title="Remove marker" onClick={() => setMarks((m) => m.filter((v) => v !== t))}>
+									{fmt(t)} ✕
+								</button>
+							))}
+							<button onClick={() => setMarks([])}>Clear markers</button>
+							<button disabled={!!busy} onClick={exportParts}>Export {marks.length + 1} parts (ZIP of MP3s)</button>
+						</div>
+					)}
 					<div className="mp3-row">
 						<label>
 							Bitrate{" "}

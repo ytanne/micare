@@ -40,6 +40,46 @@ export function trim(p: Pcm, a: number, b: number): Pcm {
 	return map(p, (c) => c.slice(i, j));
 }
 
+/** Zero-copy view of [a, b] seconds (shares memory with `p`; don't mutate). Used to export parts. */
+export function view(p: Pcm, a: number, b: number): Pcm {
+	const [i, j] = range(p, a, b);
+	return { rate: p.rate, ch: p.ch.map((c) => c.subarray(i, j)) };
+}
+
+/**
+ * Times (s) at the middle of every silent gap: all channels below `thresholdDb` for at least
+ * `minSec`. Silence touching the very start or end of the clip is ignored (nothing to split off).
+ * One pass over the samples, in 10 ms windows.
+ */
+export function findSilences(p: Pcm, thresholdDb: number, minSec: number): number[] {
+	const n = frames(p);
+	const win = Math.max(1, Math.round(p.rate * 0.01));
+	const thr = 32768 * 10 ** (thresholdDb / 20);
+	const out: number[] = [];
+	let runStart = -1;
+	const close = (end: number) => {
+		if (runStart > 0 && end < n && (end - runStart) / p.rate >= minSec) out.push((runStart + end) / 2 / p.rate);
+		runStart = -1;
+	};
+	for (let s = 0; s < n; s += win) {
+		const e = Math.min(n, s + win);
+		let m = 0;
+		for (const c of p.ch) {
+			for (let k = s; k < e; k++) {
+				const v = c[k] < 0 ? -c[k] : c[k];
+				if (v > m) m = v;
+			}
+		}
+		if (m < thr) {
+			if (runStart < 0) runStart = s;
+		} else {
+			close(s);
+		}
+	}
+	close(n);
+	return out;
+}
+
 /** Remove [a, b] seconds and join the remainder. */
 export function cut(p: Pcm, a: number, b: number): Pcm {
 	const [i, j] = range(p, a, b);
